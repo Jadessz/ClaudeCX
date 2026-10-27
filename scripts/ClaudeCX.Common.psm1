@@ -13,8 +13,10 @@ $script:RequiredSkillFiles = @(
     'assets/claude-role-prompt.md',
     'assets/empty-mcp.json',
     'assets/report-schema.json',
+    'scripts/ClaudeCX.Progress.psm1',
     'scripts/invoke-claude.ps1',
-    'scripts/test-claude-bridge.ps1'
+    'scripts/test-claude-bridge.ps1',
+    'scripts/watch-progress.ps1'
 )
 
 function Get-ClaudeCXSkillName { $script:SkillName }

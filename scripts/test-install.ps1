@@ -137,6 +137,9 @@ try {
     $destination = Join-Path $case.CodexHome 'skills\claudecx'
     Assert-True ($result.ExitCode -eq 0) "install exits 0 ($($result.Text))"
     Assert-True (Test-ClaudeCXTreeEqual -Expected $packagedSkill -Actual $destination) 'installed copy matches packaged skill'
+    foreach ($required in (Get-ClaudeCXRequiredSkillFiles)) {
+        Assert-True (Test-Path -LiteralPath (Join-Path $destination $required) -PathType Leaf) "installed skill contains $required"
+    }
     Assert-True ($result.Text.Contains('$claudecx')) 'install prints the $claudecx next step'
     Assert-True (((Get-ClaudeCXTreeManifest -Root $other) -join "`n") -ceq $otherBefore) 'unrelated skill preserved'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $case.ProfileRoot '.claude'))) 'no Claude settings created without -DisableClaudeAttribution'

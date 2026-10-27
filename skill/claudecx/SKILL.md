@@ -40,7 +40,11 @@ pwsh -NoProfile -File "<skill-root>\scripts\invoke-claude.ps1" `
   -MaxBudgetUsd 5
 ```
 
-The wrapper uses `--safe-mode`, a bridge-only settings file, an explicit role system prompt, strict empty MCP configuration, disabled auto-memory and background tasks, a preassigned UUID, structured output, a timeout, a budget ceiling, and handoff state under `%LOCALAPPDATA%\CodexClaude\handoffs`. Safe mode preserves OAuth/keychain authentication; bare mode does not and is therefore unsuitable for subscription-authenticated Claude Code.
+By default (`-ProgressMode Window`) the wrapper opens a separate read-only PowerShell window titled `ClaudeCX - <repo>` that shows one sanitized line per phase or tool action (tool and phase names, generic activity labels, and safe repository-relative paths; shell commands appear only as `running command` or `running <program>`, searches as `searching`, and URL tools as `requesting URL`; patterns, queries, hosts, prompts, and arguments are never shown). Tell the user it is there: it is only an observer, typing in it does nothing, and closing it does not stop Claude. It closes shortly after success and stays open after a failure. Use `-ProgressMode Console` to send progress to stderr instead (stdout still carries only the final JSON line), or `-ProgressMode None` for no live display, for example in CI or headless terminals. If the window cannot open, the wrapper warns on stderr and continues in `Console` mode with the same Claude flags. Displayed paths are shortened and masked, but a file name can still be sensitive. The raw commands are kept only in `claude-events.jsonl`.
+
+Each turn folder keeps `claude-events.jsonl` (raw stream-json events), `claude-result.json` (final result event), `claude-stderr.txt`, and `progress.log` (the sanitized progress the window shows). The success JSON includes `events_path` and `progress_log_path`.
+
+The wrapper uses `--safe-mode`, a bridge-only settings file, an explicit role system prompt, strict empty MCP configuration, disabled auto-memory and background tasks, a preassigned UUID, stream-json transport with a structured final report, a timeout, a budget ceiling, and handoff state under `%LOCALAPPDATA%\CodexClaude\handoffs`. Safe mode preserves OAuth/keychain authentication; bare mode does not and is therefore unsuitable for subscription-authenticated Claude Code.
 
 ## Resume
 

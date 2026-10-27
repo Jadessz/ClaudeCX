@@ -29,6 +29,10 @@ param(
     [ValidateRange(0.01, 20.0)]
     [decimal]$MaxBudgetUsd = 1.00,
 
+    # Progress display forwarded to each bridge run. None keeps the live test headless.
+    [ValidateSet('Window', 'Console', 'None')]
+    [string]$ProgressMode = 'None',
+
     # Required acknowledgement that this test contacts Claude and consumes usage.
     [switch]$AcknowledgeUsage
 )
@@ -64,7 +68,8 @@ $smokeTest = Join-Path $repoRoot 'skill\claudecx\scripts\test-claude-bridge.ps1'
 $arguments = @(
     '-NoProfile', '-File', $smokeTest,
     '-ScratchRoot', $scratch,
-    '-MaxBudgetUsd', $MaxBudgetUsd.ToString([Globalization.CultureInfo]::InvariantCulture)
+    '-MaxBudgetUsd', $MaxBudgetUsd.ToString([Globalization.CultureInfo]::InvariantCulture),
+    '-ProgressMode', $ProgressMode
 )
 & pwsh @arguments
 $exitCode = $LASTEXITCODE

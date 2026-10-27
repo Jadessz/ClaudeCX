@@ -20,7 +20,11 @@ param(
     [ValidateRange(30, 86400)]
     [int]$TimeoutSeconds = 3600,
 
-    [string]$StateRoot
+    [string]$StateRoot,
+
+    # Window: read-only progress window (Windows). Console: progress on stderr. None: logs only.
+    [ValidateSet('Window', 'Console', 'None')]
+    [string]$ProgressMode = 'Window'
 )
 
 Set-StrictMode -Version Latest
@@ -95,6 +99,8 @@ function Get-PropertyValue {
     return $property.Value
 }
 
+Import-Module (Join-Path $PSScriptRoot 'ClaudeCX.Progress.psm1') -Force
+
 if ($env:AGENT_HANDOFF_DEPTH -and $env:AGENT_HANDOFF_DEPTH -ne '0') {
     throw 'Nested agent handoffs are disabled. Claude may not invoke the Codex-to-Claude bridge.'
 }
@@ -152,6 +158,11 @@ $turnDir = $null
 $sessionDir = $null
 $sessionId = $null
 $failurePath = $null
+$progress = $null
+$stream = $null
+$process = $null
+$stderrTask = $null
+$stderrPath = $null
 
 try {
     $statusBefore = Invoke-GitText -Repository $repoRoot -Arguments @('status', '--porcelain=v1', '--untracked-files=all')
@@ -206,6 +217,27 @@ try {
     [IO.Directory]::CreateDirectory($turnDir) | Out-Null
     $failurePath = Join-Path $turnDir 'failure.json'
 
+    $progressMode = $ProgressMode
+    if ($progressMode -eq 'Window' -and -not $IsWindows) {
+        $progressMode = 'Console'
+    }
+    $progress = New-ClaudeCXProgressSink -Mode $progressMode -ProgressPath (Join-Path $turnDir 'progress.log') -DonePath (Join-Path $turnDir 'progress.done')
+    $repoName = Split-Path -Leaf $repoRoot
+    $runKind = if ($ResumeSessionId) { 'resumed session' } else { 'new session' }
+    Write-ClaudeCXProgress -Sink $progress -Message "Preparing Claude run for $repoName ($runKind)"
+    if ($progressMode -eq 'Window') {
+        try {
+            $null = Start-ClaudeCXProgressWindow -Sink $progress `
+                -MonitorScriptPath (Join-Path $PSScriptRoot 'watch-progress.ps1') `
+                -Title "ClaudeCX - $repoName" -RepositoryName $repoName -SessionId $sessionId -BridgeProcessId $PID
+        }
+        catch {
+            # Observability fallback only: Claude's flags, permissions, and limits are unchanged.
+            $progress.Mode = 'Console'
+            [Console]::Error.WriteLine("ClaudeCX: progress window unavailable ($($_.Exception.Message)); showing progress on stderr.")
+        }
+    }
+
     $briefText = [IO.File]::ReadAllText($resolvedBrief, [Text.UTF8Encoding]::new($false))
     Write-Utf8File -Path (Join-Path $turnDir 'brief.md') -Content $briefText
     Write-Utf8File -Path (Join-Path $turnDir 'status-before.txt') -Content $statusBefore
@@ -238,7 +270,8 @@ try {
     $arguments.Add('--permission-mode')
     $arguments.Add($PermissionMode)
     $arguments.Add('--output-format')
-    $arguments.Add('json')
+    $arguments.Add('stream-json')
+    $arguments.Add('--verbose')
     $arguments.Add('--json-schema')
     $arguments.Add($schemaText)
     $arguments.Add('--max-turns')
@@ -281,46 +314,63 @@ try {
     $startInfo.Environment['CLAUDE_CODE_DISABLE_BACKGROUND_TASKS'] = '1'
     $startInfo.Environment['CLAUDE_CODE_DISABLE_AGENT_VIEW'] = '1'
 
+    $eventsPath = Join-Path $turnDir 'claude-events.jsonl'
+    $stdoutPath = Join-Path $turnDir 'claude-result.json'
+    $stderrPath = Join-Path $turnDir 'claude-stderr.txt'
+    $stream = New-ClaudeCXStreamState -EventsPath $eventsPath -RepositoryRoot $repoRoot
+
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
     if (-not $process.Start()) {
         throw 'Failed to start Claude Code.'
     }
-    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $elapsed = [Diagnostics.Stopwatch]::StartNew()
+    $timeoutMs = [int64]$TimeoutSeconds * 1000
     $stderrTask = $process.StandardError.ReadToEndAsync()
+    $lineTask = $process.StandardOutput.ReadLineAsync()
     $process.StandardInput.Write($briefText)
     $process.StandardInput.Close()
+    Write-ClaudeCXProgress -Sink $progress -Message 'Claude Code started; waiting for activity'
 
-    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
-        try { $process.Kill($true) } catch { }
-        throw "Claude Code exceeded the ${TimeoutSeconds}-second timeout and was terminated."
+    # Consume stream-json incrementally: one event per non-empty stdout line.
+    $timedOut = $false
+    while ($true) {
+        $remainingMs = $timeoutMs - $elapsed.ElapsedMilliseconds
+        if ($remainingMs -le 0 -or -not $lineTask.Wait([int]$remainingMs)) {
+            $timedOut = $true
+            break
+        }
+        $line = $lineTask.GetAwaiter().GetResult()
+        if ($null -eq $line) {
+            break
+        }
+        $messages = @(Add-ClaudeCXStreamLine -State $stream -Line $line)
+        foreach ($message in $messages) {
+            Write-ClaudeCXProgress -Sink $progress -Message $message
+        }
+        $lineTask = $process.StandardOutput.ReadLineAsync()
     }
-    $stdout = $stdoutTask.GetAwaiter().GetResult()
+    if (-not $timedOut) {
+        $remainingMs = [Math]::Max(0, $timeoutMs - $elapsed.ElapsedMilliseconds)
+        $timedOut = -not $process.WaitForExit([int]$remainingMs)
+    }
+    if ($timedOut) {
+        try { $process.Kill($true) } catch { }
+        throw "Claude Code exceeded the ${TimeoutSeconds}-second timeout and was terminated. See $eventsPath"
+    }
+    $process.WaitForExit()
     $stderr = $stderrTask.GetAwaiter().GetResult()
     $exitCode = $process.ExitCode
     $process.Dispose()
-
-    $stdoutPath = Join-Path $turnDir 'claude-result.json'
-    $stderrPath = Join-Path $turnDir 'claude-stderr.txt'
-    Write-Utf8File -Path $stdoutPath -Content $stdout
+    $process = $null
+    Close-ClaudeCXStreamState -State $stream
     Write-Utf8File -Path $stderrPath -Content $stderr
 
-    if (-not $stdout.Trim()) {
-        throw "Claude Code returned no JSON output (exit code $exitCode). See $stderrPath"
+    $outer = $stream.ResultEvent
+    if ($null -ne $outer) {
+        Write-Utf8File -Path $stdoutPath -Content $stream.ResultLine
     }
-    try {
-        $outer = $stdout | ConvertFrom-Json -Depth 100
-    }
-    catch {
-        throw "Claude Code output was not valid JSON (exit code $exitCode). See $stdoutPath"
-    }
-
-    $isErrorValue = Get-PropertyValue -Object $outer -Name 'is_error'
-    $subtype = [string](Get-PropertyValue -Object $outer -Name 'subtype')
-    $isError = ($isErrorValue -eq $true)
-    if ($exitCode -ne 0 -or $isError -or ($subtype -and $subtype -ne 'success')) {
-        throw "Claude Code failed closed (exit code $exitCode, is_error=$isError, subtype='$subtype'). See $stdoutPath and $stderrPath"
-    }
+    Assert-ClaudeCXResultSuccess -Outer $outer -ExitCode $exitCode -EventsPath $eventsPath -StderrPath $stderrPath
 
     $headAfter = Invoke-GitText -Repository $repoRoot -Arguments @('rev-parse', 'HEAD')
     $initialHead = [string](Get-PropertyValue -Object $sessionMetadata -Name 'initial_head')
@@ -328,18 +378,9 @@ try {
         throw "Claude changed Git HEAD from $initialHead to $headAfter. The bridge will not continue; inspect the repository manually."
     }
 
-    $report = Get-PropertyValue -Object $outer -Name 'structured_output'
+    $report = Get-ClaudeCXStructuredReport -Outer $outer
     if ($null -eq $report) {
-        $resultValue = Get-PropertyValue -Object $outer -Name 'result'
-        if ($resultValue -is [string]) {
-            try { $report = $resultValue | ConvertFrom-Json -Depth 100 } catch { }
-        }
-        elseif ($null -ne $resultValue) {
-            $report = $resultValue
-        }
-    }
-    if ($null -eq $report) {
-        throw "Claude Code succeeded but did not return the required structured report. See $stdoutPath"
+        throw "Claude Code succeeded but did not return the required structured report. See $stdoutPath and $eventsPath"
     }
 
     $reportPath = Join-Path $turnDir 'report.json'
@@ -347,6 +388,7 @@ try {
     $newState = Get-GitStateFingerprint -Repository $repoRoot
     Write-Utf8File -Path (Join-Path $sessionDir 'last-state.sha256') -Content $newState
     Write-Utf8File -Path (Join-Path $turnDir 'status-after.txt') -Content (Invoke-GitText -Repository $repoRoot -Arguments @('status', '--porcelain=v1', '--untracked-files=all'))
+    Complete-ClaudeCXProgress -Sink $progress -Status 'success' -Message 'Structured report saved.'
 
     [ordered]@{
         status = 'success'
@@ -355,12 +397,30 @@ try {
         run_directory = $turnDir
         report_path = $reportPath
         raw_result_path = $stdoutPath
+        events_path = $eventsPath
+        progress_log_path = $progress.ProgressPath
         stderr_path = $stderrPath
         exit_code = $exitCode
     } | ConvertTo-Json -Compress
 }
 catch {
     $message = $_.Exception.Message
+    if ($null -ne $process) {
+        # Covers malformed stream lines and unexpected exceptions while Claude is running.
+        try {
+            if (-not $process.HasExited) { $process.Kill($true) }
+        }
+        catch { }
+        try {
+            if ($null -ne $stderrTask -and $stderrTask.Wait(5000)) {
+                Write-Utf8File -Path $stderrPath -Content $stderrTask.GetAwaiter().GetResult()
+            }
+        }
+        catch { }
+    }
+    if ($null -ne $progress) {
+        Complete-ClaudeCXProgress -Sink $progress -Status 'failed' -Message $message
+    }
     if ($failurePath) {
         $failure = [ordered]@{
             status = 'failed'
@@ -376,6 +436,13 @@ catch {
     exit 1
 }
 finally {
+    if ($null -ne $stream) {
+        Close-ClaudeCXStreamState -State $stream
+    }
+    if ($null -ne $progress) {
+        # No-op after a normal completion; otherwise tells the monitor to stop tailing.
+        Complete-ClaudeCXProgress -Sink $progress -Status 'failed' -Message 'The bridge stopped before reporting a result.'
+    }
     if (Test-Path -LiteralPath $lockPath) {
         try {
             $currentLock = Get-Content -Raw -LiteralPath $lockPath | ConvertFrom-Json

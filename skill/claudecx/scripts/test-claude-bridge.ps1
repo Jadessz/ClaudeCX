@@ -3,7 +3,10 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ScratchRoot,
 
-    [decimal]$MaxBudgetUsd = 1.00
+    [decimal]$MaxBudgetUsd = 1.00,
+
+    [ValidateSet('Window', 'Console', 'None')]
+    [string]$ProgressMode = 'None'
 )
 
 Set-StrictMode -Version Latest
@@ -38,16 +41,22 @@ function Invoke-Bridge {
         '-BriefPath', $Brief,
         '-MaxTurns', $MaxTurns,
         '-MaxBudgetUsd', $MaxBudgetUsd,
-        '-TimeoutSeconds', 600
+        '-TimeoutSeconds', 600,
+        '-ProgressMode', $ProgressMode
     )
     if ($ResumeId) {
         $arguments += @('-ResumeSessionId', $ResumeId)
     }
-    $output = & pwsh @arguments 2>&1
+    # Keep stdout (the single JSON result) separate from stderr progress and errors.
+    $errorPath = Join-Path $scratch "bridge-stderr-$([Guid]::NewGuid().ToString('N')).txt"
+    $output = & pwsh @arguments 2>$errorPath
     $exitCode = $LASTEXITCODE
+    $errorText = if (Test-Path -LiteralPath $errorPath) { [IO.File]::ReadAllText($errorPath).Trim() } else { '' }
+    $stdoutText = ($output | Out-String).Trim()
     return [pscustomobject]@{
         ExitCode = $exitCode
-        Text = (($output | Out-String).Trim())
+        Stdout = $stdoutText
+        Text = (@($stdoutText, $errorText) | Where-Object { $_ }) -join "`n"
     }
 }
 
@@ -155,9 +164,14 @@ $first = Invoke-Bridge -Repository $repo -Brief $briefOne
 if ($first.ExitCode -ne 0) {
     throw "Initial write smoke test failed closed: $($first.Text)"
 }
-$firstResult = $first.Text | ConvertFrom-Json
+if (@($first.Stdout -split "`r?`n" | Where-Object { $_ }).Count -ne 1) { throw "Bridge stdout was not a single JSON line: $($first.Stdout)" }
+$firstResult = $first.Stdout | ConvertFrom-Json
 $sessionId = [string]$firstResult.session_id
 if (-not $sessionId) { throw 'Initial bridge result did not include a session UUID.' }
+foreach ($logPath in @([string]$firstResult.events_path, [string]$firstResult.progress_log_path, [string]$firstResult.raw_result_path)) {
+    if (-not $logPath -or -not (Test-Path -LiteralPath $logPath -PathType Leaf)) { throw "Bridge did not write an expected log file: $logPath" }
+}
+if (-not (Test-Path -LiteralPath (Join-Path ([string]$firstResult.run_directory) 'progress.done') -PathType Leaf)) { throw 'Bridge did not write the progress completion marker.' }
 
 $georgianPath = Join-Path $repo 'georgian.txt'
 if (-not (Test-Path -LiteralPath $georgianPath -PathType Leaf)) { throw 'Claude did not create georgian.txt.' }
@@ -206,5 +220,6 @@ if ($forced.ExitCode -eq 0) { throw 'The forced max-turns failure unexpectedly r
     forced_max_turns_reported_failure = $true
     session_id = $sessionId
     scratch_root = $scratch
+    stream_json_logs = $true
     first_run_directory = [string]$firstResult.run_directory
 } | ConvertTo-Json

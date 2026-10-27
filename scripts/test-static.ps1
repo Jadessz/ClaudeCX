@@ -61,7 +61,7 @@ Write-Host '[repository layout]'
 foreach ($required in @(
         'README.md', 'SECURITY.md', 'CONTRIBUTING.md', 'AGENTS.md', 'docs/ARCHITECTURE.md',
         '.gitignore', '.gitattributes', 'install.ps1', 'uninstall.ps1',
-        'scripts/ClaudeCX.Common.psm1', 'scripts/test-static.ps1', 'scripts/test-install.ps1', 'scripts/test-live.ps1')) {
+        'scripts/ClaudeCX.Common.psm1', 'scripts/test-static.ps1', 'scripts/test-install.ps1', 'scripts/test-live.ps1', 'scripts/test-progress.ps1')) {
     Assert-True (Test-Path -LiteralPath (Join-Path $repoRoot $required) -PathType Leaf) "required file exists: $required"
 }
 foreach ($required in (Get-ClaudeCXRequiredSkillFiles)) {
@@ -158,7 +158,7 @@ function Test-InsideIf {
 }
 
 # Flags that must be sent on every call, initial and resumed alike.
-foreach ($flag in @('-p', '--safe-mode', '--permission-mode', '--output-format', '--json-schema', '--max-turns',
+foreach ($flag in @('-p', '--safe-mode', '--permission-mode', '--output-format', 'stream-json', '--verbose', '--json-schema', '--max-turns',
         '--max-budget-usd', '--settings', '--append-system-prompt-file', '--strict-mcp-config', '--mcp-config')) {
     $nodes = @($stringNodes | Where-Object { $_.Value -ceq $flag })
     Assert-True ($nodes.Count -ge 1) "bridge passes $flag"
@@ -170,8 +170,8 @@ foreach ($flag in @('--session-id', '--resume')) {
 foreach ($asset in @('assets\bridge-settings.json', 'assets\claude-role-prompt.md', 'assets\report-schema.json', 'assets\empty-mcp.json')) {
     Assert-True (@($stringNodes | Where-Object { $_.Value -ceq $asset }).Count -ge 1) "bridge references $asset"
 }
-$forbiddenFlags = @('--dangerously-skip-permissions', '--bare', 'bypassPermissions', 'acceptEdits', '--allow-dangerously-skip-permissions')
-foreach ($scriptFile in @(Get-ChildItem -LiteralPath $skillRoot -Recurse -File | Where-Object { $_.Extension -in '.ps1', '.json' })) {
+$forbiddenFlags = @('--dangerously-skip-permissions', '--bare', 'bypassPermissions', 'acceptEdits', '--allow-dangerously-skip-permissions', '--include-partial-messages')
+foreach ($scriptFile in @(Get-ChildItem -LiteralPath $skillRoot -Recurse -File | Where-Object { $_.Extension -in '.ps1', '.psm1', '.json' })) {
     $text = [IO.File]::ReadAllText($scriptFile.FullName, $utf8)
     foreach ($forbidden in $forbiddenFlags) {
         Assert-True (-not $text.Contains($forbidden)) "no $forbidden in $($scriptFile.Name)"
@@ -187,6 +187,11 @@ $validateSet = @(if ($permission) { $permission.Attributes | Where-Object { $_.T
 $modes = if ($validateSet.Count -eq 1) { @($validateSet[0].PositionalArguments | ForEach-Object { $_.Value }) | Sort-Object } else { @() }
 Assert-True (($modes -join ',') -ceq 'auto,plan') 'PermissionMode is restricted to auto and plan'
 Assert-True ($permission -and $permission.DefaultValue -and $permission.DefaultValue.Value -ceq 'auto') 'PermissionMode defaults to auto'
+$progressParameter = $parameters['ProgressMode']
+$progressSet = @(if ($progressParameter) { $progressParameter.Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateSet' } })
+$progressModes = if ($progressSet.Count -eq 1) { @($progressSet[0].PositionalArguments | ForEach-Object { $_.Value }) | Sort-Object } else { @() }
+Assert-True (($progressModes -join ',') -ceq 'Console,None,Window') 'ProgressMode is restricted to Window, Console, and None'
+Assert-True ($progressParameter -and $progressParameter.DefaultValue -and $progressParameter.DefaultValue.Value -ceq 'Window') 'ProgressMode defaults to Window'
 foreach ($name in @('MaxTurns', 'MaxBudgetUsd', 'TimeoutSeconds')) {
     $parameter = $parameters[$name]
     $hasRange = $parameter -and @($parameter.Attributes | Where-Object { $_.TypeName.Name -eq 'ValidateRange' }).Count -eq 1
@@ -206,7 +211,21 @@ $bridgeChecks = [ordered]@{
     'resume HEAD check' = 'HEAD changed since this Claude session started. Refusing to resume.'
     'resume working-tree check' = 'The working tree changed outside the prior successful Claude turn. Refusing to resume.'
     'post-run HEAD check' = 'Claude changed Git HEAD from'
-    'timeout enforced' = '$process.WaitForExit($TimeoutSeconds * 1000)'
+    'timeout budget' = '$timeoutMs = [int64]$TimeoutSeconds * 1000'
+    'timeout enforced while streaming' = '$lineTask.Wait([int]$remainingMs)'
+    'timeout enforced after the stream ends' = '$process.WaitForExit([int]$remainingMs)'
+    'stdout consumed incrementally' = '$process.StandardOutput.ReadLineAsync()'
+    'raw event log kept' = "'claude-events.jsonl'"
+    'progress log kept' = "'progress.log'"
+    'stderr kept separately' = "'claude-stderr.txt'"
+    'progress module loaded' = "Join-Path `$PSScriptRoot 'ClaudeCX.Progress.psm1'"
+    'monitor script launched' = "Join-Path `$PSScriptRoot 'watch-progress.ps1'"
+    'window fallback to console' = "`$progress.Mode = 'Console'"
+    'fail-closed result check' = 'Assert-ClaudeCXResultSuccess -Outer $outer -ExitCode $exitCode'
+    'structured report extraction' = 'Get-ClaudeCXStructuredReport -Outer $outer'
+    'monitor told of success' = "Complete-ClaudeCXProgress -Sink `$progress -Status 'success'"
+    'monitor told of failure' = "Complete-ClaudeCXProgress -Sink `$progress -Status 'failed' -Message `$message"
+    'monitor told when the bridge stops' = "Complete-ClaudeCXProgress -Sink `$progress -Status 'failed' -Message 'The bridge stopped"
     'process tree killed on timeout' = '$process.Kill($true)'
     'state under LOCALAPPDATA' = "Join-Path `$env:LOCALAPPDATA 'CodexClaude\handoffs'"
     'single active lock' = "'active.lock'"
@@ -217,9 +236,37 @@ $bridgeChecks = [ordered]@{
 foreach ($entry in $bridgeChecks.GetEnumerator()) {
     Assert-True ($bridgeText.Contains($entry.Value)) "bridge invariant: $($entry.Key)"
 }
-Assert-True ($bridgeText -match '\$exitCode -ne 0 -or \$isError -or \(\$subtype -and \$subtype -ne ''success''\)') 'bridge fails closed on exit code, is_error, and non-success subtype'
-Assert-True ($bridgeText -match "Get-PropertyValue -Object \`$outer -Name 'is_error'") 'bridge reads is_error'
-Assert-True ($bridgeText -match "Get-PropertyValue -Object \`$outer -Name 'subtype'") 'bridge reads subtype'
+Assert-True ($bridgeText.IndexOf('Assert-ClaudeCXResultSuccess') -lt $bridgeText.IndexOf('Claude changed Git HEAD from')) 'result is checked before HEAD and report processing'
+
+# --- Progress module and monitor ---
+Write-Host '[progress module]'
+$progressText = Read-RepoText 'skill/claudecx/scripts/ClaudeCX.Progress.psm1'
+Assert-True ($progressText -match '\$ExitCode -ne 0 -or \$isError -or \(\$subtype -and \$subtype -ne ''success''\)') 'progress module fails closed on exit code, is_error, and non-success subtype'
+Assert-True ($progressText -match "Get-ClaudeCXPropertyValue -Object \`$Outer -Name 'is_error'") 'progress module reads is_error'
+Assert-True ($progressText -match "Get-ClaudeCXPropertyValue -Object \`$Outer -Name 'subtype'") 'progress module reads subtype'
+Assert-True ($progressText -match "Get-ClaudeCXPropertyValue -Object \`$Outer -Name 'structured_output'") 'progress module reads structured_output'
+Assert-True (-not ($progressText -match 'SafeText\s+-Text\s+\$command')) 'progress module never displays raw shell command text'
+Assert-True ($progressText.Contains('Get-ClaudeCXCommandActivity -Command $command')) 'shell commands are reduced to an activity label'
+Assert-True (-not ($progressText -match 'SafeText\s+-Text\s+\$(pattern|url|uri|query|prompt)') -and -not $progressText.Contains('.Host')) 'progress module never displays patterns, queries, prompts, URLs, or hosts'
+Assert-True ($progressText.Contains('requesting URL') -and $progressText.Contains('searching')) 'URL and search tools use generic activity labels'
+Assert-True ($progressText.Contains('$startInfo.ArgumentList.Add($argument)')) 'monitor launched with a structured argument list'
+Assert-True ($progressText.Contains('$startInfo.UseShellExecute = $true') -and $progressText.Contains('[Diagnostics.ProcessWindowStyle]::Normal')) 'monitor opens in its own normal window without inherited handles'
+Assert-True (-not $progressText.Contains('RedirectStandardInput')) 'monitor is never given a handle to Claude input'
+$monitorText = Read-RepoText 'skill/claudecx/scripts/watch-progress.ps1'
+Assert-True ($monitorText.Contains('[IO.FileShare]::ReadWrite') -and $monitorText.Contains('[IO.FileAccess]::Read')) 'monitor opens the progress log read-only'
+Assert-True ($monitorText.Contains('Test-BridgeAlive')) 'monitor stops when the bridge process is gone'
+foreach ($parameterName in @('ProgressPath', 'DonePath', 'BridgeProcessId', 'SuccessCloseSeconds', 'FailureCloseSeconds')) {
+    Assert-True ($monitorText.Contains("`$$parameterName")) "monitor declares -$parameterName"
+}
+
+# --- Offline progress behavior tests ---
+Write-Host '[progress behavior]'
+$progressTest = & ([Environment]::ProcessPath) -NoProfile -NonInteractive -File (Join-Path $PSScriptRoot 'test-progress.ps1') 2>&1
+$progressExit = $LASTEXITCODE
+if ($progressExit -ne 0) {
+    $progressTest | ForEach-Object { Write-Host "    $_" }
+}
+Assert-True ($progressExit -eq 0) "test-progress.ps1 passes ($(@($progressTest)[-1]))"
 
 # --- Bridge settings asset ---
 Write-Host '[bridge settings]'
@@ -260,7 +307,7 @@ foreach ($phrase in @('Do not invoke Codex, Claude Code', 'Do not commit', 'push
 Write-Host '[live test wrapper]'
 $liveAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $repoRoot 'scripts/test-live.ps1'), [ref]$null, [ref]$null)
 $liveParameters = @($liveAst.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
-foreach ($name in @('ScratchRoot', 'MaxBudgetUsd', 'AcknowledgeUsage')) {
+foreach ($name in @('ScratchRoot', 'MaxBudgetUsd', 'AcknowledgeUsage', 'ProgressMode')) {
     Assert-True ($liveParameters -contains $name) "test-live.ps1 declares -$name"
 }
 $liveText = Read-RepoText 'scripts/test-live.ps1'
@@ -271,7 +318,8 @@ Write-Host '[documentation]'
 $readme = Read-RepoText 'README.md'
 foreach ($phrase in @('$claudecx', 'install.ps1', 'uninstall.ps1', 'scripts\test-static.ps1', 'scripts\test-install.ps1',
         'scripts\test-live.ps1', '%LOCALAPPDATA%\CodexClaude\handoffs', 'PowerShell 7', 'Windows', '-Force',
-        '-DisableClaudeAttribution', '-Yes', '-Permanent', 'active.lock', 'not a host sandbox')) {
+        '-DisableClaudeAttribution', '-Yes', '-Permanent', 'active.lock', 'not a host sandbox',
+        '-ProgressMode Console', '-ProgressMode None', 'claude-events.jsonl', 'progress.log', 'does not stop Claude')) {
     Assert-True ($readme.Contains($phrase)) "README mentions $phrase"
 }
 Assert-True ($readme.Contains('git clone https://github.com/Jadessz/ClaudeCX.git')) 'README clones the public repository URL'
@@ -281,6 +329,10 @@ if (-not $hasLicense) {
     foreach ($doc in @($relativeFiles | Where-Object { $_ -like '*.md' })) {
         Assert-True ((Read-RepoText $doc) -notmatch '(?i)\blicen[cs]e[ds]?\b|copyright') "no licensing claims without a license file: $doc"
     }
+}
+foreach ($doc in @('docs/ARCHITECTURE.md', 'SECURITY.md', 'skill/claudecx/SKILL.md')) {
+    $docText = Read-RepoText $doc
+    Assert-True ($docText.Contains('ProgressMode') -and $docText.Contains('progress.log')) "$doc documents progress modes and the progress log"
 }
 $agents = Read-RepoText 'AGENTS.md'
 Assert-True ($agents.Contains('scripts\test-static.ps1') -and $agents.Contains('scripts\test-install.ps1')) 'AGENTS.md names the static and install tests'
