@@ -150,7 +150,11 @@ Handoff state is kept outside your repositories:
       failure.json                 # failure reason (failure only)
 ```
 
-`<repo-key>` is the first 24 hex characters of the SHA-256 of the lowercase repository path. On success the bridge prints one line of JSON with `session_id`, `run_directory`, `report_path`, `events_path`, and `progress_log_path`. The report is a hint. The real evidence is `git status`, `git diff`, and your own test runs.
+`<repo-key>` is the first 24 hex characters of the SHA-256 of the lowercase repository path.
+
+When the bridge runs from the Codex desktop app (a packaged Microsoft Store app), Windows redirects its `%LOCALAPPDATA%` writes into the app's package folder. The state then lives under `%LOCALAPPDATA%\Packages\OpenAI.Codex_<id>\LocalCache\Local\CodexClaude\handoffs\`, even though the paths the bridge prints say `%LOCALAPPDATA%\CodexClaude\handoffs`. Codex sees the printed paths. Look in the package folder when you browse the logs yourself.
+
+On success the bridge prints one line of JSON with `session_id`, `run_directory`, `report_path`, `events_path`, and `progress_log_path`. The report is a hint. The real evidence is `git status`, `git diff`, and your own test runs.
 
 Logs are never deleted automatically. Remove old session folders yourself when you no longer need them. They can contain brief text and Claude output.
 

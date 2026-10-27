@@ -65,6 +65,8 @@ State is kept under `%LOCALAPPDATA%\CodexClaude\handoffs`, never inside a reposi
                             claude-stderr.txt, progress.log (sanitized), progress.done (completion marker), dashboard.json, dashboard-endpoint.json, stop-request.json (only after Stop run)
 ```
 
+When the bridge is started from the packaged Codex desktop app, Windows redirects `%LOCALAPPDATA%` writes to `%LOCALAPPDATA%\Packages\OpenAI.Codex_<id>\LocalCache\Local`. Processes inside the package see the normal path. Processes outside it, such as a user's own shell, find the state only under the package folder.
+
 The working-tree fingerprint is a SHA-256 over `git status --porcelain=v1 --untracked-files=all`, `git diff --binary HEAD`, `git diff --cached --binary HEAD`, and the content hash of every untracked file.
 
 ## New run flow

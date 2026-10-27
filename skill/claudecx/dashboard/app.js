@@ -156,7 +156,7 @@
   async function loadState() {
     if (!token) {
       setConnection(false, 'No access token');
-      showNotice('This page needs the access link opened by the bridge. Reloading removes the token; reopen the dashboard from the bridge run directory if needed.');
+      showNotice('This page needs the access link opened by the bridge. The token is kept in memory only, so a reload cannot reconnect. The run continues; its progress is in progress.log in the run folder.');
       return;
     }
     try {
