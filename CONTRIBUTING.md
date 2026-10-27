@@ -12,6 +12,8 @@
 
 ## Workflow
 
+You need PowerShell 7.2 or later (`pwsh`) to run the scripts. If `pwsh` is not found, install it with `winget install --id Microsoft.PowerShell -e --source winget`. The Codex desktop app's bundled copy does not put `pwsh` on your own terminal's path.
+
 1. Create a branch.
 2. Make your change.
 3. Run the offline suites:
