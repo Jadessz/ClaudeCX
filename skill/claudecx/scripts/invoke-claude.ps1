@@ -22,9 +22,10 @@ param(
 
     [string]$StateRoot,
 
+    # Dashboard: local browser dashboard (Windows; falls back to Window, then Console).
     # Window: read-only progress window (Windows). Console: progress on stderr. None: logs only.
-    [ValidateSet('Window', 'Console', 'None')]
-    [string]$ProgressMode = 'Window'
+    [ValidateSet('Dashboard', 'Window', 'Console', 'None')]
+    [string]$ProgressMode = 'Dashboard'
 )
 
 Set-StrictMode -Version Latest
@@ -100,6 +101,7 @@ function Get-PropertyValue {
 }
 
 Import-Module (Join-Path $PSScriptRoot 'ClaudeCX.Progress.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'ClaudeCX.Dashboard.psm1') -Force
 
 if ($env:AGENT_HANDOFF_DEPTH -and $env:AGENT_HANDOFF_DEPTH -ne '0') {
     throw 'Nested agent handoffs are disabled. Claude may not invoke the Codex-to-Claude bridge.'
@@ -163,6 +165,7 @@ $stream = $null
 $process = $null
 $stderrTask = $null
 $stderrPath = $null
+$stopRequested = $false
 
 try {
     $statusBefore = Invoke-GitText -Repository $repoRoot -Arguments @('status', '--porcelain=v1', '--untracked-files=all')
@@ -218,24 +221,24 @@ try {
     $failurePath = Join-Path $turnDir 'failure.json'
 
     $progressMode = $ProgressMode
-    if ($progressMode -eq 'Window' -and -not $IsWindows) {
+    if ($progressMode -in @('Dashboard', 'Window') -and -not $IsWindows) {
         $progressMode = 'Console'
     }
     $progress = New-ClaudeCXProgressSink -Mode $progressMode -ProgressPath (Join-Path $turnDir 'progress.log') -DonePath (Join-Path $turnDir 'progress.done')
     $repoName = Split-Path -Leaf $repoRoot
     $runKind = if ($ResumeSessionId) { 'resumed session' } else { 'new session' }
     Write-ClaudeCXProgress -Sink $progress -Message "Preparing Claude run for $repoName ($runKind)"
-    if ($progressMode -eq 'Window') {
-        try {
-            $null = Start-ClaudeCXProgressWindow -Sink $progress `
-                -MonitorScriptPath (Join-Path $PSScriptRoot 'watch-progress.ps1') `
-                -Title "ClaudeCX - $repoName" -RepositoryName $repoName -SessionId $sessionId -BridgeProcessId $PID
-        }
-        catch {
-            # Observability fallback only: Claude's flags, permissions, and limits are unchanged.
-            $progress.Mode = 'Console'
-            [Console]::Error.WriteLine("ClaudeCX: progress window unavailable ($($_.Exception.Message)); showing progress on stderr.")
-        }
+    $stopPollMs = 250
+    # Observability fallback only (Dashboard -> Window -> Console): Claude's flags, permissions, and limits are unchanged.
+    $progressMode = Start-ClaudeCXProgressDisplay -Sink $progress -Mode $progressMode -StartDashboard {
+        $metadataPath = Write-ClaudeCXDashboardMetadata -TurnDirectory $turnDir -Repository $repoRoot -SessionId $sessionId `
+            -Resumed ([bool]$ResumeSessionId) -BridgeProcessId $PID -TimeoutSeconds $TimeoutSeconds -MaxTurns $MaxTurns -MaxBudgetUsd $MaxBudgetUsd
+        Start-ClaudeCXDashboard -MetadataPath $metadataPath -ServerScriptPath (Join-Path $PSScriptRoot 'show-dashboard.ps1') `
+            -MaxLifetimeSeconds ([Math]::Min(172800, $TimeoutSeconds + 1800))
+    } -StartWindow {
+        Start-ClaudeCXProgressWindow -Sink $progress `
+            -MonitorScriptPath (Join-Path $PSScriptRoot 'watch-progress.ps1') `
+            -Title "ClaudeCX - $repoName" -RepositoryName $repoName -SessionId $sessionId -BridgeProcessId $PID
     }
 
     $briefText = [IO.File]::ReadAllText($resolvedBrief, [Text.UTF8Encoding]::new($false))
@@ -313,6 +316,7 @@ try {
     $startInfo.Environment['CLAUDE_CODE_DISABLE_AUTO_MEMORY'] = '1'
     $startInfo.Environment['CLAUDE_CODE_DISABLE_BACKGROUND_TASKS'] = '1'
     $startInfo.Environment['CLAUDE_CODE_DISABLE_AGENT_VIEW'] = '1'
+    $startInfo.Environment.Remove((Get-ClaudeCXDashboardTokenVariable)) | Out-Null
 
     $eventsPath = Join-Path $turnDir 'claude-events.jsonl'
     $stdoutPath = Join-Path $turnDir 'claude-result.json'
@@ -332,13 +336,21 @@ try {
     $process.StandardInput.Close()
     Write-ClaudeCXProgress -Sink $progress -Message 'Claude Code started; waiting for activity'
 
-    # Consume stream-json incrementally: one event per non-empty stdout line.
+    # Consume stream-json incrementally: one event per non-empty stdout line. The wait wakes
+    # every $stopPollMs to look for a dashboard stop request; the overall timeout is unchanged.
     $timedOut = $false
     while ($true) {
         $remainingMs = $timeoutMs - $elapsed.ElapsedMilliseconds
-        if ($remainingMs -le 0 -or -not $lineTask.Wait([int]$remainingMs)) {
+        if ($remainingMs -le 0) {
             $timedOut = $true
             break
+        }
+        if (Test-ClaudeCXStopRequested -TurnDirectory $turnDir) {
+            $stopRequested = $true
+            break
+        }
+        if (-not $lineTask.Wait([int][Math]::Min($remainingMs, $stopPollMs))) {
+            continue
         }
         $line = $lineTask.GetAwaiter().GetResult()
         if ($null -eq $line) {
@@ -350,9 +362,21 @@ try {
         }
         $lineTask = $process.StandardOutput.ReadLineAsync()
     }
-    if (-not $timedOut) {
+    while (-not $timedOut -and -not $stopRequested) {
         $remainingMs = [Math]::Max(0, $timeoutMs - $elapsed.ElapsedMilliseconds)
-        $timedOut = -not $process.WaitForExit([int]$remainingMs)
+        if ($process.WaitForExit([int][Math]::Min($remainingMs, $stopPollMs))) {
+            break
+        }
+        if ($elapsed.ElapsedMilliseconds -ge $timeoutMs) {
+            $timedOut = $true
+            break
+        }
+        $stopRequested = Test-ClaudeCXStopRequested -TurnDirectory $turnDir
+    }
+    if ($stopRequested) {
+        # Only the Claude process tree started by this bridge is terminated. Edits are not reverted.
+        try { $process.Kill($true) } catch { }
+        throw 'Stopped by a user request from the ClaudeCX dashboard. Claude Code was terminated; partial edits remain in the working tree for Codex review.'
     }
     if ($timedOut) {
         try { $process.Kill($true) } catch { }
@@ -418,12 +442,13 @@ catch {
         }
         catch { }
     }
+    $failureStatus = if ($stopRequested) { 'stopped' } else { 'failed' }
     if ($null -ne $progress) {
-        Complete-ClaudeCXProgress -Sink $progress -Status 'failed' -Message $message
+        Complete-ClaudeCXProgress -Sink $progress -Status $failureStatus -Message $message
     }
     if ($failurePath) {
         $failure = [ordered]@{
-            status = 'failed'
+            status = $failureStatus
             session_id = $sessionId
             repository = $repoRoot
             run_directory = $turnDir

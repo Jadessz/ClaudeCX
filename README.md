@@ -76,9 +76,29 @@ Codex then:
 
 Use only one writer at a time. Don't edit the repository while a bridge run is active.
 
-## Live progress window
+## Live dashboard
 
-While Claude works, the bridge opens a separate PowerShell window titled `ClaudeCX - <repository>`. It shows one short line per phase or tool action, for example `Tool Edit: src\routes\signup.ts` or `Tool Bash: running npm`, followed by the final result. Shell details are hidden: a shell command is shown only as `running command`, or as `running <program>` when the command starts with a plain, well-known program name such as `npm`, `git`, or `pwsh`. Arguments, quoted strings, redirections, inline scripts, environment assignments, and URLs inside commands are never shown. The raw command is kept only in `claude-events.jsonl`.
+While Claude works, the bridge opens a local **dashboard** in your default browser (`-ProgressMode Dashboard`, the default). It is a small page served by a separate PowerShell process on `http://127.0.0.1:<random port>/`. It has no build step, no external scripts, fonts, or images, and makes no network calls beyond loopback.
+
+The dashboard shows:
+
+- a header with the repository name, run status (active, succeeded, failed, stopped), elapsed time, and connection state;
+- an overview: the latest sanitized activity, session ID (with a Copy button), new or resumed run, start time, timeout, turn and budget limits, and, when available, turns used, duration, and estimated cost;
+- **Activity**: the sanitized `progress.log` lines (the same text the progress window shows);
+- **Changes**: the current `git status --short` and `git diff --no-ext-diff --no-color HEAD --` of the repository, rendered as plain text and capped at 2 MiB (a truncation warning is shown above the cap);
+- **Report**: the structured `report.json` (summary, changed files, checks, commands, denied actions, open questions, deviations, risks), or the reason from `failure.json` when the run failed or was stopped.
+
+It has exactly three controls: **Refresh**, **Copy** (session ID), and **Stop run**. Stop run is enabled only while the run is active and asks for a second confirmation. It does not kill Claude itself: it creates `stop-request.json` in the turn folder, and the bridge, which polls for that marker about four times a second, terminates Claude's process tree, records the run as `stopped` in `failure.json` and `progress.done`, and exits with a nonzero code. **Partial edits are not reverted**; they stay in the working tree for Codex review, exactly like a timeout. The resume fingerprint is not updated, so a stopped session cannot be resumed after Claude changed files.
+
+There is no pause, resume, steering, follow-up prompt, approve/reject, commit, push, or deploy control, and the dashboard cannot read arbitrary files or run commands.
+
+Closing the browser tab **does not stop Claude**. The dashboard server exits on its own shortly after the run completes (after about 3 minutes without the page open, at most 15 minutes), when the bridge process disappears, or at a hard lifetime limit. Reloading the page drops the in-memory access token; the run continues, and its progress remains in `progress.log`.
+
+Security model in brief: the server binds only to `127.0.0.1` on an OS-assigned port and needs no admin rights or URL ACL changes. Each run gets a fresh 256-bit token. The token reaches the server through its environment, and the browser through the URL fragment (`#token=...`), which is not sent in HTTP requests. The page removes it from the address bar and sends it in an `Authorization` header on every `/api/*` call. The token is never written to disk, logs, or the repository. Responses carry a strict Content Security Policy, and all content is rendered as text. See [SECURITY.md](SECURITY.md#local-dashboard).
+
+### Other progress modes
+
+`-ProgressMode Window` opens the previous read-only PowerShell window titled `ClaudeCX - <repository>`. It shows one short line per phase or tool action, for example `Tool Edit: src\routes\signup.ts` or `Tool Bash: running npm`, followed by the final result. Shell details are hidden: a shell command is shown only as `running command`, or as `running <program>` when the command starts with a plain, well-known program name such as `npm`, `git`, or `pwsh`. Arguments, quoted strings, redirections, inline scripts, environment assignments, and URLs inside commands are never shown. The raw command is kept only in `claude-events.jsonl`.
 
 - The window is a **read-only observer**. Claude itself still runs non-interactively under the bridge. Anything you type in the window is not sent to Claude.
 - Closing the window **does not stop Claude** and does not fail the run. The full progress stays in `progress.log`.
@@ -96,7 +116,7 @@ pwsh -NoProfile -File "<skill-root>\scripts\invoke-claude.ps1" -ProjectPath . -B
 pwsh -NoProfile -File "<skill-root>\scripts\invoke-claude.ps1" -ProjectPath . -BriefPath brief.md -ProgressMode None
 ```
 
-If the window cannot be opened, the bridge prints a one-line warning on stderr and continues in `Console` mode. This only changes where progress is shown. Claude's flags, permissions, and limits stay the same.
+If the dashboard cannot start (no server, no browser), the bridge prints a one-line warning on stderr and falls back to `Window`; if the window cannot be opened either, it continues in `Console` mode. Fallbacks only change where progress is shown. Claude's flags, permissions, and limits stay the same.
 
 ## Lifecycle: clean tree, new runs, and resumes
 
@@ -122,7 +142,10 @@ Handoff state is kept outside your repositories:
       claude-result.json           # the final stream-json result event
       claude-stderr.txt
       progress.log                 # sanitized, human-readable progress (what the window shows)
-      progress.done                # completion marker for the progress window
+      progress.done                # completion marker (success, failed, or stopped)
+      dashboard.json               # non-secret dashboard metadata (no token)
+      dashboard-endpoint.json      # dashboard port and PID while the server runs
+      stop-request.json            # present only if Stop run was confirmed
       report.json                  # structured report (success only)
       failure.json                 # failure reason (failure only)
 ```
@@ -158,6 +181,8 @@ Uninstall removes only `<CodexHome>\skills\claudecx`, and only if its `SKILL.md`
 | **"working tree changed" / "HEAD changed" on resume** | Someone edited or committed after Claude's last successful turn. Review the changes, then start a new run from a clean tree. |
 | **"Another Claude bridge run is active"** (stale lock) | Make sure no `claude` or bridge `pwsh` process is still running for that repository. A lock whose PID has exited is cleared on the next run. If the PID was reused by an unrelated process, delete `%LOCALAPPDATA%\CodexClaude\handoffs\<repo-key>\active.lock` by hand. |
 | **Budget or turn-limit failure** (a non-`success` `subtype` such as `error_max_turns`) | The bridge failed closed on purpose. Check `claude-result.json` and `failure.json` in the run folder. Partial edits stay in the working tree. Because the fingerprint is updated only after a successful turn, a resume is refused once Claude has changed files. Review or discard the partial work, then start a new run with a narrower brief or a higher `-MaxTurns` or `-MaxBudgetUsd`. |
+| **The dashboard does not open** | The bridge warns on stderr and falls back to the progress window, then to `Console`. Check that a default browser is set for `http` links. If you reloaded the page, the access token is gone by design: the run continues, and `progress.log` in the run folder has the full progress. Use `-ProgressMode Window`, `Console`, or `None` to skip the dashboard. |
+| **Stop run did nothing** | Stop is accepted only while the run is active. The bridge checks for `stop-request.json` about every 250 ms; if the run had already finished, the request is refused. A stopped run reports `status: stopped` in `failure.json` and leaves partial edits in place. |
 | **No progress window appears** | The bridge falls back to `Console` mode and prints a warning on stderr. Read `progress.log` in the run folder, or pass `-ProgressMode Console` (or `None`) explicitly. Closing the window never affects the run. |
 | **"malformed stream-json line"** | Claude Code printed something that is not a JSON event. The bridge stopped Claude and failed closed. Inspect `claude-events.jsonl` (the last line is the bad one) and `claude-stderr.txt`, and update Claude Code. |
 | **Timeout** | Claude's process tree is killed after `-TimeoutSeconds` (default 3600). Review the partial changes and split the task. |
@@ -175,11 +200,15 @@ skill/claudecx/                   the Codex skill (source of truth for the bridg
   scripts/invoke-claude.ps1       the bridge
   scripts/ClaudeCX.Progress.psm1  stream-json parsing, result checks, progress sanitizing
   scripts/watch-progress.ps1      read-only progress window
+  scripts/ClaudeCX.Dashboard.psm1 dashboard API, loopback HTTP handler, stop marker, display fallback
+  scripts/show-dashboard.ps1      local dashboard server (127.0.0.1 only)
+  dashboard/                      packaged dashboard page (index.html, styles.css, app.js)
   scripts/test-claude-bridge.ps1  deep live smoke test
 scripts/
   ClaudeCX.Common.psm1            shared installer and validation helpers
-  test-static.ps1                 offline static validation (also runs test-progress.ps1)
+  test-static.ps1                 offline static validation (also runs test-progress.ps1 and test-dashboard.ps1)
   test-progress.ps1               offline stream-json, sanitizing, and progress-window tests
+  test-dashboard.ps1              offline dashboard server, API, UI-source, fallback, and stop tests
   test-install.ps1                offline sandboxed installer tests
   test-live.ps1                   opt-in live smoke test wrapper
 docs/ARCHITECTURE.md              design and session flow
@@ -193,7 +222,7 @@ docs/ARCHITECTURE.md              design and session flow
 pwsh -NoProfile -File .\scripts\test-live.ps1 -ScratchRoot "$env:TEMP\claudecx-live-01" -AcknowledgeUsage -MaxBudgetUsd 1
 ```
 
-`-MaxBudgetUsd` applies to each Claude call, and the test makes several calls. The live test runs the bridge with `-ProgressMode None` by default; pass `-ProgressMode Window` to watch the progress window during the run.
+`-MaxBudgetUsd` applies to each Claude call, and the test makes several calls. The live test runs the bridge with `-ProgressMode None` by default; pass `-ProgressMode Dashboard` or `-ProgressMode Window` to watch the run.
 
 ## More documentation
 

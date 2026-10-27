@@ -140,6 +140,12 @@ try {
     foreach ($required in (Get-ClaudeCXRequiredSkillFiles)) {
         Assert-True (Test-Path -LiteralPath (Join-Path $destination $required) -PathType Leaf) "installed skill contains $required"
     }
+    foreach ($dashboardFile in @('dashboard/index.html', 'dashboard/styles.css', 'dashboard/app.js', 'scripts/ClaudeCX.Dashboard.psm1', 'scripts/show-dashboard.ps1')) {
+        $installedFile = Join-Path $destination $dashboardFile
+        $packagedFile = Join-Path $packagedSkill $dashboardFile
+        Assert-True ((Test-Path -LiteralPath $installedFile -PathType Leaf) -and
+            ([IO.File]::ReadAllText($installedFile) -ceq [IO.File]::ReadAllText($packagedFile))) "installed dashboard asset matches the package: $dashboardFile"
+    }
     Assert-True ($result.Text.Contains('$claudecx')) 'install prints the $claudecx next step'
     Assert-True (((Get-ClaudeCXTreeManifest -Root $other) -join "`n") -ceq $otherBefore) 'unrelated skill preserved'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $case.ProfileRoot '.claude'))) 'no Claude settings created without -DisableClaudeAttribution'

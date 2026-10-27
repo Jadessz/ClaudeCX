@@ -358,9 +358,9 @@ function Get-ClaudeCXStructuredReport {
 }
 
 function New-ClaudeCXProgressSink {
-    # Mode Window and None only write the progress log; Console also writes to stderr, never stdout.
+    # Mode Dashboard, Window, and None only write the progress log; Console also writes to stderr, never stdout.
     param(
-        [Parameter(Mandatory = $true)][ValidateSet('Window', 'Console', 'None')][string]$Mode,
+        [Parameter(Mandatory = $true)][ValidateSet('Dashboard', 'Window', 'Console', 'None')][string]$Mode,
         [Parameter(Mandatory = $true)][string]$ProgressPath,
         [Parameter(Mandatory = $true)][string]$DonePath,
         [IO.TextWriter]$ErrorWriter
@@ -406,14 +406,18 @@ function Complete-ClaudeCXProgress {
     # Idempotent. Always writes the completion marker so a monitor never tails forever.
     param(
         [Parameter(Mandatory = $true)][object]$Sink,
-        [Parameter(Mandatory = $true)][ValidateSet('success', 'failed')][string]$Status,
+        [Parameter(Mandatory = $true)][ValidateSet('success', 'failed', 'stopped')][string]$Status,
         [AllowNull()][AllowEmptyString()][string]$Message
     )
 
     if ($Sink.Completed) {
         return
     }
-    $final = if ($Status -eq 'success') { 'ClaudeCX run finished successfully' } else { "ClaudeCX run failed: $Message" }
+    $final = switch ($Status) {
+        'success' { 'ClaudeCX run finished successfully' }
+        'stopped' { "ClaudeCX run stopped: $Message" }
+        default { "ClaudeCX run failed: $Message" }
+    }
     Write-ClaudeCXProgress -Sink $Sink -Message $final
     $Sink.Completed = $true
     try { $Sink.Writer.Dispose() } catch { }

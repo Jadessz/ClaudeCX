@@ -13,8 +13,13 @@ $script:RequiredSkillFiles = @(
     'assets/claude-role-prompt.md',
     'assets/empty-mcp.json',
     'assets/report-schema.json',
+    'dashboard/app.js',
+    'dashboard/index.html',
+    'dashboard/styles.css',
+    'scripts/ClaudeCX.Dashboard.psm1',
     'scripts/ClaudeCX.Progress.psm1',
     'scripts/invoke-claude.ps1',
+    'scripts/show-dashboard.ps1',
     'scripts/test-claude-bridge.ps1',
     'scripts/watch-progress.ps1'
 )
