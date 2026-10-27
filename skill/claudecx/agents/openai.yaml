@@ -1,0 +1,6 @@
+interface:
+  display_name: "ClaudeCX"
+  short_description: "Guarded Codex-to-Claude coding delegation"
+  default_prompt: "Use $claudecx to prepare a scoped implementation brief, run Claude Code through the guarded bridge, and independently verify the resulting changes."
+policy:
+  allow_implicit_invocation: false
