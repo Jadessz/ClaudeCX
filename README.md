@@ -1,6 +1,6 @@
 # ClaudeCX
 
-[![ClaudeCX: Codex plans, Claude builds, Codex reviews. Click to watch the 21-second tour.](docs/assets/claudecx-tour.jpg)](docs/assets/claudecx-tour.mp4)
+[![ClaudeCX tour: a one-line request in Codex becomes a full brief, Claude Code works while the live dashboard shows every step, and Codex checks the real diff. Click to watch with sound.](docs/assets/claudecx-tour.gif)](docs/assets/claudecx-tour.mp4)
 
 <p align="center"><a href="docs/assets/claudecx-tour.mp4"><b>▶ Watch the 21-second tour</b></a> (shown on a demo project, with sound)</p>
 
@@ -12,6 +12,11 @@ ClaudeCX lets **Codex** (OpenAI's coding agent) hand coding work to **Claude Cod
 - **You watch it live.** A dashboard opens in your browser while Claude works, with a **Stop run** button.
 
 You start it on purpose by typing `$claudecx` in a Codex chat. Codex never uses it on its own.
+
+![How a run flows: 1. you ask with $claudecx; 2. Codex plans and writes the brief; 3. the ClaudeCX bridge guards the run (clean Git tree, one run at a time, safe mode, fails closed); 4. Claude Code builds, runs your tests and returns a report; 5. Codex reviews the real diff and reruns your tests, then you commit. Claude never commits, pushes, or deploys. A live dashboard on 127.0.0.1 shows every step and has a Stop run button. For fixes, Codex resumes the same session.](docs/assets/claudecx-flow.png)
+
+<details>
+<summary>Text version of the diagram</summary>
 
 ```text
  You ──"$claudecx add a login page"──▶ Codex
@@ -30,6 +35,8 @@ You start it on purpose by typing `$claudecx` in a Codex chat. Codex never uses 
                                          ▼
                                   You review and commit
 ```
+
+</details>
 
 > **Warning:** ClaudeCX is defense in depth, **not a host sandbox**. Claude runs as your Windows user, with your files and your network. Its blocked-command rules match command text, so a confused agent can get around them. Your project's own build and test scripts (`npm test`, `make`, `pytest`, and so on) can run any code. Use ClaudeCX only on projects whose scripts you trust or have read. See [SECURITY.md](SECURITY.md).
 
@@ -235,6 +242,19 @@ One task per request works best. Split large features into several runs.
 ## 5. The live dashboard
 
 While Claude works, the bridge opens a local **Dashboard** in your default browser at `http://127.0.0.1:<random port>/`. This is the default (`-ProgressMode Dashboard`). It is a small page served by a separate PowerShell process on your own computer. It has no build step, loads nothing from the internet, and makes no network calls beyond your own machine.
+
+<table>
+  <tr>
+    <td width="50%"><a href="docs/assets/dashboard-journey.png"><img src="docs/assets/dashboard-journey.png" alt="Prompt journey tab: the one-line original request beside the full brief Codex wrote, with the sections Codex added"></a><br><b>Prompt journey</b>: your request beside the brief Codex wrote.</td>
+    <td width="50%"><a href="docs/assets/dashboard-work.png"><img src="docs/assets/dashboard-work.png" alt="Work tab: one row per step Claude took, such as reading, editing and running tests, with timestamps"></a><br><b>Work</b>: every step Claude takes, as it happens.</td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="docs/assets/dashboard-changes.png"><img src="docs/assets/dashboard-changes.png" alt="Changes tab: git status and the diff against HEAD"></a><br><b>Changes</b>: the real <code>git status</code> and diff.</td>
+    <td width="50%"><a href="docs/assets/dashboard-report.png"><img src="docs/assets/dashboard-report.png" alt="Report tab: summary, passed checks, files changed, commands run and risks"></a><br><b>Report</b>: Claude's summary, checks, and risks.</td>
+  </tr>
+</table>
+
+<sub>Screenshots from a demo project. Click any image to see it full size.</sub>
 
 ### What it shows
 
