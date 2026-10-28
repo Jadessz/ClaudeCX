@@ -1,5 +1,9 @@
 # ClaudeCX
 
+[![ClaudeCX: Codex plans, Claude builds, Codex reviews. Click to watch the 21-second tour.](docs/assets/claudecx-tour.jpg)](docs/assets/claudecx-tour.mp4)
+
+<p align="center"><a href="docs/assets/claudecx-tour.mp4"><b>▶ Watch the 21-second tour</b></a> (shown on a demo project, with sound)</p>
+
 ClaudeCX lets **Codex** (OpenAI's coding agent) hand coding work to **Claude Code** (Anthropic's coding agent) and then check the result.
 
 - **Codex plans and reviews.** It reads your project, writes a precise task description for Claude (the *brief*), checks every change Claude makes, and runs your tests itself.
