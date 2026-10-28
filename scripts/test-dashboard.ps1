@@ -550,7 +550,10 @@ try {
         [IO.File]::WriteAllText($oversized, ('x' * 1048577), $utf8)
         $invalidUtf8 = Join-Path $sandbox 'input-invalid.md'
         [IO.File]::WriteAllBytes($invalidUtf8, [byte[]](0x61, 0xC3, 0x28, 0x0A))
+        $unbornRepo = Join-Path $sandbox 'repo-unborn'
+        & git init -q $unbornRepo
         $inputCases = @(
+            @{ Name = 'repository without commits'; Brief = $goodBrief; Original = $null; Repo = $unbornRepo; Expect = 'has no commits yet' },
             @{ Name = 'inside-repository brief'; Brief = $insideFile; Original = $null; Expect = 'BriefPath must be outside the repository' },
             @{ Name = 'inside-repository original prompt'; Brief = $goodBrief; Original = $insideFile; Expect = 'OriginalPromptPath must be outside the repository' },
             @{ Name = 'oversized brief'; Brief = $oversized; Original = $null; Expect = 'BriefPath exceeds the 1048576-byte limit' },
@@ -559,7 +562,8 @@ try {
         )
         foreach ($case in $inputCases) {
             $caseState = Join-Path $sandbox ('input-state-' + [Guid]::NewGuid().ToString('N'))
-            $caseArgs = @('-NoProfile', '-NonInteractive', '-File', $bridgeScript, '-ProjectPath', $inputRepo, '-BriefPath', $case.Brief,
+            $caseRepo = if ($case.ContainsKey('Repo')) { $case.Repo } else { $inputRepo }
+            $caseArgs = @('-NoProfile', '-NonInteractive', '-File', $bridgeScript, '-ProjectPath', $caseRepo, '-BriefPath', $case.Brief,
                 '-StateRoot', $caseState, '-ProgressMode', 'None', '-TimeoutSeconds', '60', '-MaxTurns', '1', '-MaxBudgetUsd', '0.01')
             if ($case.Original) { $caseArgs += @('-OriginalPromptPath', $case.Original) }
             $caseInfo = [Diagnostics.ProcessStartInfo]::new()

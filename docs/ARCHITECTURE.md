@@ -19,9 +19,10 @@ ClaudeCX connects two agents with a narrow, auditable interface. Codex plans and
 | Report schema | `skill/claudecx/assets/report-schema.json` | The JSON Schema passed to `--json-schema`. Claude must return this structured report. |
 | Empty MCP config | `skill/claudecx/assets/empty-mcp.json` | Used with `--strict-mcp-config` so no MCP server is loaded. |
 | Live smoke test | `skill/claudecx/scripts/test-claude-bridge.ps1` | End-to-end check against the real Claude CLI (opt-in, uses account usage). |
-| Installer / uninstaller | `install.ps1`, `uninstall.ps1` | Copy the skill into `<CodexHome>\skills\claudecx`, or remove it, with backups. |
+| Installer / uninstaller | `install.ps1`, `uninstall.ps1` | Copy the skill into `<CodexHome>\skills\claudecx` (unblocking the copy), or remove it, with backups. The installer then runs the setup check. |
+| Setup check | `doctor.ps1` | Read-only checks of Windows, PowerShell, blocked downloads, Git, Claude Code (found, options, sign-in), Codex home, the installed skill, the run-log folder, and a default browser; each problem has a fix. `-Json` gives agents a machine-readable report. Agents follow `docs/AGENT-SETUP.md`. |
 | Shared helpers | `scripts/ClaudeCX.Common.psm1` | Skill validation, Codex-home resolution, tree hashing, the strict-JSON attribution merge. |
-| Offline tests | `scripts/test-static.ps1`, `scripts/test-install.ps1`, `scripts/test-progress.ps1` | Static invariants, sandboxed install tests, and stream-json and progress-window fixtures (run by `test-static.ps1`). |
+| Offline tests | `scripts/test-static.ps1`, `scripts/test-install.ps1`, `scripts/test-progress.ps1`, `scripts/test-dashboard.ps1`, `scripts/test-doctor.ps1` | Static invariants, sandboxed install tests, and the progress, dashboard, and setup-check suites (run by `test-static.ps1`). |
 
 ## Trust boundaries
 

@@ -9,7 +9,7 @@ Use Claude Code as the implementation worker while Codex owns scoping, the hando
 
 ## Preconditions
 
-1. Work in a Git repository. For a new session, require a clean tracked and untracked working tree. Do not use the bridge when unrelated changes exist; ask the user to commit, stash, or move them first.
+1. Work in a Git repository with at least one commit (the bridge refuses a repository with no commits). For a new session, require a clean tracked and untracked working tree. Do not use the bridge when unrelated changes exist; ask the user to commit, stash, or move them first.
 2. Read the applicable repository instructions yourself (`AGENTS.md`, and any `CLAUDE.md` or `CLAUDE.local.md`). Because the bridge runs Claude with `--safe-mode`, include every operative convention Claude needs in the brief.
 3. Never invoke this skill implicitly. The user must explicitly request Claude delegation or name `$claudecx`.
 4. Keep one writer. Do not edit repository files while a Claude bridge run is active.

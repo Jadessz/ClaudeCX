@@ -92,6 +92,8 @@ function Invoke-Script {
         [Environment]::SetEnvironmentVariable('LOCALAPPDATA', (Join-Path $ProfileRoot 'AppData\Local'))
         [Environment]::SetEnvironmentVariable('CLAUDE_CONFIG_DIR', (Join-Path $ProfileRoot '.claude'))
         [Environment]::SetEnvironmentVariable('CODEX_HOME', $(if ($CodexHomeEnv) { $CodexHomeEnv } else { $null }))
+        # The installer's setup checks would call the real claude; they have their own tests in test-doctor.ps1.
+        if ([IO.Path]::GetFileName($ScriptPath) -eq 'install.ps1') { $Arguments = @($Arguments) + '-SkipChecks' }
         $output = & pwsh -NoProfile -NonInteractive -File $ScriptPath @Arguments 2>&1
         $exitCode = $LASTEXITCODE
     }

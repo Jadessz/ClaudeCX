@@ -165,6 +165,11 @@ if (-not (Test-Path -LiteralPath $resolvedProject -PathType Container)) {
 
 $repoRoot = Invoke-GitText -Repository $resolvedProject -Arguments @('rev-parse', '--show-toplevel')
 $repoRoot = (Resolve-Path -LiteralPath $repoRoot).Path
+# A brand-new repository has no HEAD to compare Claude's changes against; say so plainly.
+$null = & git -C $repoRoot rev-parse --verify --quiet 'HEAD^{commit}' 2>$null
+if ($LASTEXITCODE -ne 0) {
+    throw "The Git repository has no commits yet, so there is nothing to compare Claude's changes against. Make a first commit (for example: git add -A, then git commit -m 'Initial commit'), then run again."
+}
 # Validated and read before any state is created, so bad inputs fail closed before Claude starts.
 $briefText = Read-PromptInput -Path $BriefPath -Label 'BriefPath' -Repository $repoRoot
 $originalPromptText = $null

@@ -60,8 +60,8 @@ $textFiles = @($relativeFiles | Where-Object {
 Write-Host '[repository layout]'
 foreach ($required in @(
         'README.md', 'SECURITY.md', 'CONTRIBUTING.md', 'AGENTS.md', 'docs/ARCHITECTURE.md',
-        '.gitignore', '.gitattributes', 'install.ps1', 'uninstall.ps1',
-        'scripts/ClaudeCX.Common.psm1', 'scripts/test-static.ps1', 'scripts/test-install.ps1', 'scripts/test-live.ps1', 'scripts/test-progress.ps1', 'scripts/test-dashboard.ps1')) {
+        '.gitignore', '.gitattributes', 'install.ps1', 'uninstall.ps1', 'doctor.ps1', 'docs/AGENT-SETUP.md',
+        'scripts/ClaudeCX.Common.psm1', 'scripts/test-static.ps1', 'scripts/test-install.ps1', 'scripts/test-live.ps1', 'scripts/test-progress.ps1', 'scripts/test-dashboard.ps1', 'scripts/test-doctor.ps1')) {
     Assert-True (Test-Path -LiteralPath (Join-Path $repoRoot $required) -PathType Leaf) "required file exists: $required"
 }
 foreach ($required in (Get-ClaudeCXRequiredSkillFiles)) {
@@ -314,6 +314,22 @@ if ($dashboardExit -ne 0) {
     $dashboardTest | ForEach-Object { Write-Host "    $_" }
 }
 Assert-True ($dashboardExit -eq 0) "test-dashboard.ps1 passes ($(@($dashboardTest)[-1]))"
+
+Write-Host '[setup checks]'
+$doctorText = Read-RepoText 'doctor.ps1'
+Assert-True ($doctorText.Contains("Get-Command claude.exe") -and $doctorText.Contains("Get-Command claude ")) 'doctor finds Claude Code the same way the bridge does'
+Assert-True ($doctorText.Contains('[switch]$Json')) 'doctor has a JSON mode for agents'
+Assert-True ((Read-RepoText 'install.ps1').Contains('Unblock-File')) 'installer unblocks the installed copy'
+$doctorTest = & ([Environment]::ProcessPath) -NoProfile -NonInteractive -File (Join-Path $PSScriptRoot 'test-doctor.ps1') 2>&1
+$doctorExit = $LASTEXITCODE
+if ($doctorExit -ne 0) {
+    $doctorTest | ForEach-Object { Write-Host "    $_" }
+}
+Assert-True ($doctorExit -eq 0) "test-doctor.ps1 passes ($(@($doctorTest)[-1]))"
+foreach ($doc in @('AGENTS.md', 'README.md', 'docs/AGENT-SETUP.md')) {
+    Assert-True ((Read-RepoText $doc).Contains('doctor.ps1')) "$doc tells readers about doctor.ps1"
+}
+Assert-True ((Read-RepoText 'AGENTS.md').Contains('docs/AGENT-SETUP.md')) 'AGENTS.md points agents to the setup runbook'
 
 # --- Bridge settings asset ---
 Write-Host '[bridge settings]'

@@ -85,6 +85,8 @@ Claude Code must support `--safe-mode`, `--output-format stream-json`, `--json-s
 
 Do these steps once per computer. Run the commands in a normal terminal (Windows Terminal or PowerShell).
 
+> **Rather let an AI agent do it?** Give Codex, Claude Code, or another coding agent this repository and ask it to set ClaudeCX up. It follows [docs/AGENT-SETUP.md](docs/AGENT-SETUP.md), checks the result with `doctor.ps1`, and tells you which steps need you (signing in to Claude and Codex).
+
 ### Step 1: Install Git
 
 Skip this if `git --version` already prints a version.
@@ -141,6 +143,12 @@ git clone https://github.com/Jadessz/ClaudeCX.git
 cd ClaudeCX
 ```
 
+> **Downloaded the ZIP instead?** Windows marks every file in it as coming from the internet, and PowerShell then refuses to run them ("is not digitally signed"). Unblock them once, inside the extracted folder:
+>
+> ```powershell
+> Get-ChildItem -Recurse | Unblock-File
+> ```
+
 ### Step 6: Install the skill into Codex
 
 ```powershell
@@ -152,7 +160,9 @@ The installer:
 1. checks that the skill files in the repository are complete and valid;
 2. copies them to `<CodexHome>\skills\claudecx`;
 3. checks that the copy matches the original exactly;
-4. prints the next step.
+4. unblocks the installed copy, so Codex can run it even if you downloaded a ZIP;
+5. prints the next step;
+6. runs the setup check ([Step 8](#step-8-check-your-setup)) and lists anything still missing, with how to fix it.
 
 `<CodexHome>` is, in this order: the `-CodexHome` value if you pass one, otherwise the `CODEX_HOME` environment variable, otherwise `%USERPROFILE%\.codex`. Most people never set either, so the skill lands in `%USERPROFILE%\.codex\skills\claudecx`.
 
@@ -168,16 +178,30 @@ pwsh -NoProfile -File .\install.ps1 -Force -DisableClaudeAttribution
 
 This changes only `attribution.commit`, `attribution.pr`, and `attribution.sessionUrl` in `%USERPROFILE%\.claude\settings.json` (or `CLAUDE_CONFIG_DIR\settings.json`, or the file you pass with `-ClaudeSettingsPath`). Every other setting is kept, and the original file is saved first as `settings.json.claudecx-backup-<timestamp>`. The file must be strict JSON (no comments, no trailing commas).
 
-### Step 8 (optional): Check the installation
+### Step 8: Check your setup
 
-These tests run offline, use temporary folders, and never touch your real Codex or Claude configuration:
+The installer already ran this check. Run it again any time something seems wrong:
+
+```powershell
+pwsh -NoProfile -File .\doctor.ps1
+```
+
+It checks, without changing anything: Windows, PowerShell, blocked downloads, Git, Claude Code (found, new enough, signed in), Codex, the installed skill, the folder for run logs, and a default browser for the dashboard. Every problem comes with a **Fix** line. When everything is fine, it ends with:
+
+```text
+Ready: ClaudeCX can run on this computer.
+```
+
+Add `-Json` for a machine-readable report (agents use this).
+
+Optionally, run the offline self-tests too. They use temporary folders and never touch your real Codex or Claude configuration:
 
 ```powershell
 pwsh -NoProfile -File .\scripts\test-static.ps1
 pwsh -NoProfile -File .\scripts\test-install.ps1
 ```
 
-Each one ends with a line such as `test-static: all 498 checks passed`.
+Each one ends with a line such as `test-static: all ... checks passed`.
 
 ### Step 9: Restart Codex
 
@@ -187,7 +211,7 @@ Each one ends with a line such as `test-static: all 498 checks passed`.
 
 ### Prepare the project
 
-ClaudeCX needs a Git repository with **no uncommitted changes**, including no new, untracked files. That way, every change after the run is known to be Claude's.
+ClaudeCX needs a Git repository with **at least one commit** and **no uncommitted changes**, including no new, untracked files. That way, every change after the run is known to be Claude's.
 
 In a terminal inside your project:
 
@@ -462,10 +486,14 @@ To remove everything ClaudeCX ever created, also delete:
 
 | Symptom | What to do |
 | --- | --- |
+| **Not sure what is wrong** | Run `pwsh -NoProfile -File .\doctor.ps1` from the ClaudeCX folder. It checks the whole setup and prints a fix for each problem. |
+| **"… is not digitally signed. You cannot run this script"** | The files came from a ZIP download and Windows blocked them. In the ClaudeCX folder run `Get-ChildItem -Recurse \| Unblock-File`, then `pwsh -NoProfile -File .\install.ps1 -Force`. Or use `git clone` instead of the ZIP. |
+| **Claude cannot connect when run from the Codex CLI** | The Codex sandbox may block network access for commands. Approve running the bridge command outside the sandbox when Codex asks, or allow network access in your Codex sandbox settings. |
 | **`$claudecx` does nothing** (skill not found) | Open a new chat or restart Codex. Check that `<CodexHome>\skills\claudecx\SKILL.md` exists. If you use a custom `CODEX_HOME`, install with that value or pass `-CodexHome`. Type `$claudecx` exactly. |
 | **`pwsh` is not recognized** | Install PowerShell 7 ([Step 2](#step-2-install-powershell-7)), then open a new terminal. |
 | **"claude" not found, or Claude not signed in** | Run `claude --version` and `claude auth status` in a new terminal. If needed, run `claude` once to sign in. The bridge uses safe mode, not bare mode, so subscription sign-ins keep working. |
 | **Auto mode unavailable** | The bridge refuses to fall back to a more permissive mode. Update Claude Code and check that your account or organization allows the `auto` permission mode. Codex may use `-PermissionMode plan` for a read-only look. Never use `--dangerously-skip-permissions`. |
+| **"The Git repository has no commits yet"** | ClaudeCX compares Claude's changes with your last commit, so a brand-new repository needs one first: `git add -A`, then `git commit -m "Initial commit"`. |
 | **"requires a clean Git working tree"** | Commit, stash, or remove all changes, including untracked files, until `git status --porcelain --untracked-files=all` prints nothing. After a failed or stopped run, this usually means Claude's partial edits are still there: review them, then commit or discard them. |
 | **"working tree changed" or "HEAD changed" when resuming** | Something was edited or committed after Claude's last successful turn. Review the changes, then start a new run from a clean tree. |
 | **"Another Claude bridge run is active"** | Make sure no `claude` or bridge `pwsh` process is still running for that repository. A lock whose process has exited is cleared on the next run. If its process ID was reused by an unrelated program, delete `%LOCALAPPDATA%\CodexClaude\handoffs\<repo-key>\active.lock` by hand. |
@@ -505,6 +533,7 @@ To remove everything ClaudeCX ever created, also delete:
 
 ```text
 install.ps1, uninstall.ps1        installer and uninstaller
+doctor.ps1                        read-only setup check (-Json for agents)
 skill/claudecx/                   the Codex skill (source of truth for the bridge)
   SKILL.md                        instructions Codex follows
   agents/openai.yaml              display metadata; implicit invocation disabled
@@ -520,12 +549,14 @@ package.json, package-lock.json   contributor-only build tooling; installing Cla
   scripts/test-claude-bridge.ps1  deep live smoke test
 scripts/
   ClaudeCX.Common.psm1            shared installer and validation helpers
-  test-static.ps1                 offline static checks (also runs test-progress.ps1 and test-dashboard.ps1)
+  test-static.ps1                 offline static checks (also runs test-progress.ps1, test-dashboard.ps1, and test-doctor.ps1)
   test-progress.ps1               offline stream-json, sanitizing, and progress-window tests
   test-dashboard.ps1              offline dashboard server, API, page-source, fallback, and stop tests
+  test-doctor.ps1                 offline setup-check and installer-unblock tests against a fake Claude
   test-install.ps1                offline sandboxed installer tests
   test-live.ps1                   opt-in live smoke test
 docs/ARCHITECTURE.md              design, trust boundaries, and run flow
+docs/AGENT-SETUP.md               step-by-step setup runbook for AI agents
 SECURITY.md                       threat model and limitations
 CONTRIBUTING.md                   development workflow and rules
 AGENTS.md                         instructions for Codex when it works on this repository

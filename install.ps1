@@ -12,6 +12,11 @@ An existing installation is never overwritten unless -Force is supplied. With
 -Force, the existing copy is first moved to a timestamped backup under
 <CodexHome>\claudecx-backups.
 
+The installed copy is unblocked (a ZIP download marks files as coming from the
+internet, which would stop PowerShell from running the bridge). Afterwards the
+installer runs doctor.ps1 to report anything else missing (Git, Claude Code,
+sign-in, browser); use -SkipChecks to skip that.
+
 -DisableClaudeAttribution optionally sets attribution.commit, attribution.pr, and
 attribution.sessionUrl in a Claude settings file (default: the global
 %USERPROFILE%\.claude\settings.json, or CLAUDE_CONFIG_DIR\settings.json) while
@@ -39,7 +44,10 @@ param(
     [switch]$DisableClaudeAttribution,
 
     # Claude settings file used with -DisableClaudeAttribution.
-    [string]$ClaudeSettingsPath
+    [string]$ClaudeSettingsPath,
+
+    # Do not run the setup checks (doctor.ps1) after installing.
+    [switch]$SkipChecks
 )
 
 Set-StrictMode -Version Latest
@@ -128,6 +136,9 @@ $installedProblems = @(Get-ClaudeCXSkillProblems -SkillRoot $destination)
 if ($installedProblems.Count -gt 0) {
     throw "Installed skill failed validation:`n - $($installedProblems -join "`n - ")"
 }
+# A repository downloaded as a ZIP marks every file as coming from the internet, and the copy keeps
+# that mark. PowerShell would then refuse to run the bridge, so clear it on the installed copy.
+Get-ChildItem -LiteralPath $destination -Recurse -File | Unblock-File
 
 Write-Host "Installed ClaudeCX to $destination"
 if ($backupPath) {
@@ -151,3 +162,10 @@ if ($DisableClaudeAttribution) {
 Write-Host ''
 Write-Host 'Next step: open a new Codex chat (restart Codex if it was already running) and invoke $claudecx, for example:'
 Write-Host '  $claudecx Add input validation to the signup form and its unit tests.'
+
+# 8. Check the rest of the setup (Git, Claude Code, sign-in, browser). Problems are reported, not fatal:
+# the skill itself is installed either way.
+if (-not $SkipChecks) {
+    & (Join-Path $PSScriptRoot 'doctor.ps1') -CodexHome $codexHomeFull
+    $global:LASTEXITCODE = 0
+}
