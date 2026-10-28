@@ -16,6 +16,7 @@ $script:StopName = 'stop-request.json'
 $script:MaxActivityLines = 1000
 $script:MaxActivityBytes = 262144
 $script:MaxJsonFileBytes = 4194304
+$script:MaxPromptBytes = 1048576
 $script:ReportListFields = @('files_changed', 'commands_run', 'denied_actions', 'open_questions', 'deviations_from_brief', 'risks')
 $script:StaticAssets = [ordered]@{
     '/' = @('index.html', 'text/html; charset=utf-8')
@@ -27,6 +28,7 @@ $script:ApiRoutes = @{
     '/api/state' = 'GET'
     '/api/changes' = 'GET'
     '/api/report' = 'GET'
+    '/api/prompts' = 'GET'
     '/api/stop' = 'POST'
 }
 $script:SecurityHeaders = [ordered]@{
@@ -100,6 +102,8 @@ function Get-ClaudeCXDashboardPaths {
         Failure = Join-Path $root 'failure.json'
         StatusBefore = Join-Path $root 'status-before.txt'
         StatusAfter = Join-Path $root 'status-after.txt'
+        OriginalPrompt = Join-Path $root 'original-prompt.md'
+        CodexBrief = Join-Path $root 'codex-brief.md'
     }
 }
 
@@ -516,6 +520,41 @@ function Get-ClaudeCXDashboardReport {
     return [ordered]@{ kind = 'pending' }
 }
 
+function Read-ClaudeCXPromptFile {
+    # Bounded strict UTF-8 read of a fixed prompt artifact. Returns $null when absent, oversized, or invalid.
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    try {
+        $info = [IO.FileInfo]::new($Path)
+        if (-not $info.Exists -or $info.Length -gt $script:MaxPromptBytes) {
+            return $null
+        }
+        $bytes = [IO.File]::ReadAllBytes($Path)
+        if ($bytes.Length -gt $script:MaxPromptBytes) {
+            return $null
+        }
+        return [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+    }
+    catch { }
+    return $null
+}
+
+function Get-ClaudeCXDashboardPrompts {
+    # The user's original request (when captured) and the exact brief Claude received. Plain strings only.
+    param([Parameter(Mandatory = $true)][object]$Metadata)
+
+    $paths = Get-ClaudeCXDashboardPaths -TurnDirectory ([string]$Metadata.run_directory)
+    $original = Read-ClaudeCXPromptFile -Path $paths.OriginalPrompt
+    $brief = Read-ClaudeCXPromptFile -Path $paths.CodexBrief
+    return [ordered]@{
+        original_available = ($null -ne $original)
+        original_prompt = $original
+        brief_available = ($null -ne $brief)
+        codex_brief = $brief
+        max_bytes = $script:MaxPromptBytes
+    }
+}
+
 function New-ClaudeCXDashboardContext {
     # Server-side request context. The token lives only in this in-memory object.
     param(
@@ -611,6 +650,9 @@ function Invoke-ClaudeCXDashboardRequest {
         }
         '/api/report' {
             return New-ClaudeCXJsonResponse -Status 200 -Value (Get-ClaudeCXDashboardReport -Metadata $Context.Metadata)
+        }
+        '/api/prompts' {
+            return New-ClaudeCXJsonResponse -Status 200 -Value (Get-ClaudeCXDashboardPrompts -Metadata $Context.Metadata)
         }
         '/api/stop' {
             $origin = if ($Headers.Contains('origin')) { [string]$Headers['origin'] } else { '' }
@@ -891,6 +933,7 @@ Export-ModuleMember -Function @(
     'Invoke-ClaudeCXDashboardGit',
     'Get-ClaudeCXDashboardChanges',
     'Get-ClaudeCXDashboardReport',
+    'Get-ClaudeCXDashboardPrompts',
     'New-ClaudeCXDashboardContext',
     'Invoke-ClaudeCXDashboardRequest',
     'Invoke-ClaudeCXDashboardConnection',

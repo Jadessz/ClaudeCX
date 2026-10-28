@@ -10,8 +10,9 @@ ClaudeCX connects two agents with a narrow, auditable interface. Codex plans and
 | Skill metadata | `skill/claudecx/agents/openai.yaml` | Display name `ClaudeCX`, a default prompt that mentions `$claudecx`, and `allow_implicit_invocation: false`. |
 | Bridge | `skill/claudecx/scripts/invoke-claude.ps1` | Checks the Git state, takes the per-repository lock, records handoff state, starts Claude Code with fixed flags, enforces the timeout, and fails closed. |
 | Progress module | `skill/claudecx/scripts/ClaudeCX.Progress.psm1` | Parses Claude's stream-json events, keeps the raw event log, applies the fail-closed result checks, extracts the structured report, and writes sanitized progress lines. |
-| Dashboard module | `skill/claudecx/scripts/ClaudeCX.Dashboard.psm1` | Dashboard metadata, stop marker, fixed read-only API (state, changes, report), bounded loopback HTTP handler, server launch, browser launch, and the Dashboard → Window → Console fallback. |
+| Dashboard module | `skill/claudecx/scripts/ClaudeCX.Dashboard.psm1` | Dashboard metadata, stop marker, fixed read-only API (state, changes, report, prompts), bounded loopback HTTP handler, server launch, browser launch, and the Dashboard → Window → Console fallback. |
 | Dashboard server | `skill/claudecx/scripts/show-dashboard.ps1`, `skill/claudecx/dashboard/` | Hidden PowerShell process serving the packaged page and API on `127.0.0.1`; exits after completion, when the bridge disappears, or at its lifetime limit. |
+| Dashboard source | `dashboard-src/`, `package.json` | React UI built by Vite into the three fixed files in `skill/claudecx/dashboard/`. Contributor build tooling only: installation and runtime never run Node or npm. |
 | Progress monitor | `skill/claudecx/scripts/watch-progress.ps1` | Read-only window that tails `progress.log` and exits on the completion marker or when the bridge process disappears. |
 | Bridge settings | `skill/claudecx/assets/bridge-settings.json` | Settings passed with `--settings`: hooks and auto-memory off, attribution off, deny rules for commit, push, publish, deploy, cloud, network-shell, recursion, secret reads, and MCP. |
 | Role prompt | `skill/claudecx/assets/claude-role-prompt.md` | Appended to Claude's system prompt on every call with `--append-system-prompt-file`. |
@@ -47,7 +48,7 @@ ClaudeCX connects two agents with a narrow, auditable interface. Codex plans and
 3. **Bridge → Claude.** The bridge controls the command line, the environment, and the working directory. The brief is data on stdin and never becomes part of a command string. Arguments go through `ProcessStartInfo.ArgumentList`.
 4. **Claude → repository.** Claude has your user's file-system and process access, limited by Claude Code's permission system and the deny rules. This boundary is **not** a sandbox. See [SECURITY.md](../SECURITY.md).
 5. **Claude → Codex.** The structured report is advisory. Codex checks the diff, `HEAD`, and the tests itself.
-6. **Bridge ↔ dashboard.** The bridge writes `dashboard.json` (non-secret metadata) and starts `show-dashboard.ps1` with shell execution and a hidden window, passing the per-run token only through the environment. The server reads only fixed artifacts in the turn folder (`progress.log`, `progress.done`, `claude-result.json`, `report.json`, `failure.json`) and runs two fixed, read-only Git queries. Its only write is the atomic `stop-request.json` marker; the bridge polls for it every 250 ms while streaming and does the termination itself (`Kill($true)` on the Claude process it started), then writes `failure.json` and `progress.done` with status `stopped` and exits nonzero without updating `last-state.sha256`.
+6. **Bridge ↔ dashboard.** The bridge writes `dashboard.json` (non-secret metadata) and starts `show-dashboard.ps1` with shell execution and a hidden window, passing the per-run token only through the environment. The server reads only fixed artifacts in the turn folder (`progress.log`, `progress.done`, `claude-result.json`, `report.json`, `failure.json`, `original-prompt.md`, `codex-brief.md`) and runs two fixed, read-only Git queries. Its only write is the atomic `stop-request.json` marker; the bridge polls for it every 250 ms while streaming and does the termination itself (`Kill($true)` on the Claude process it started), then writes `failure.json` and `progress.done` with status `stopped` and exits nonzero without updating `last-state.sha256`.
 7. **Bridge → progress window.** One-way, through files. The monitor only reads `progress.log` and `progress.done`. It is started with shell execution, so it inherits none of the bridge's handles and never sees Claude's stdin or stdout. Closing it has no effect on the run.
 
 ## State layout
@@ -60,7 +61,7 @@ State is kept under `%LOCALAPPDATA%\CodexClaude\handoffs`, never inside a reposi
   <session-uuid>/
     session.json            {session_id, repository, initial_head, created_at}
     last-state.sha256       fingerprint after the last successful turn
-    <turn-timestamp>/       brief.md, status-before/after, report.json or failure.json,
+    <turn-timestamp>/       codex-brief.md, original-prompt.md (optional), status-before/after, report.json or failure.json,
                             claude-events.jsonl (raw stream), claude-result.json (final result event),
                             claude-stderr.txt, progress.log (sanitized), progress.done (completion marker), dashboard.json, dashboard-endpoint.json, stop-request.json (only after Stop run)
 ```
@@ -72,11 +73,11 @@ The working-tree fingerprint is a SHA-256 over `git status --porcelain=v1 --untr
 ## New run flow
 
 1. Refuse if `AGENT_HANDOFF_DEPTH` is set and non-zero, which means a nested call from Claude.
-2. Resolve the repository root and `HEAD`.
+2. Resolve the repository root and `HEAD`. Read the brief and, when given, `-OriginalPromptPath`: each must be a file outside the repository, at most 1 MiB, and strict UTF-8 (a leading BOM is dropped), or the run fails before any state is created.
 3. Take `active.lock`. A lock held by a live PID blocks the run. A lock whose PID has exited is cleared.
 4. Require an empty `git status --porcelain=v1 --untracked-files=all`.
 5. Create a new session UUID. Record `session.json` (including `initial_head`) and the initial fingerprint.
-6. Copy the brief and the status into a new turn folder. Open `progress.log` and start the progress display: with `-ProgressMode Dashboard` (the default), write `dashboard.json`, start the loopback dashboard server, and open the browser; on failure, warn on stderr and try the read-only monitor window (`Window`). If the window cannot start, warn on stderr and fall back to `Console`.
+6. Atomically write `codex-brief.md` (and `original-prompt.md` when supplied) into a new turn folder, then read `codex-brief.md` back as Claude's exact input so the displayed and executed handoff cannot diverge. Resumed turns capture their own copies. Copy the status into the turn folder. Open `progress.log` and start the progress display: with `-ProgressMode Dashboard` (the default), write `dashboard.json`, start the loopback dashboard server, and open the browser; on failure, warn on stderr and try the read-only monitor window (`Window`). If the window cannot start, warn on stderr and fall back to `Console`.
 7. Start `claude -p ... --safe-mode --permission-mode auto --output-format stream-json --verbose --json-schema <schema> --max-turns N --max-budget-usd X --settings <bridge-settings> --append-system-prompt-file <role> --strict-mcp-config --mcp-config <empty> --session-id <uuid>`, with `AGENT_HANDOFF_DEPTH=1`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, and `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`. The brief goes in as UTF-8 on stdin. Partial-message streaming is not enabled, so only completed messages and tool calls arrive.
 8. Read stdout line by line as it arrives. Each non-empty line is appended to `claude-events.jsonl`, parsed as one JSON event, and summarized into at most a few sanitized progress lines. Unknown event types are kept in the raw log and not displayed. A malformed line kills Claude's process tree and fails the run.
 9. The whole read loop and the final exit wait share one `TimeoutSeconds` budget. On timeout, kill the whole process tree.
@@ -91,7 +92,7 @@ The working-tree fingerprint is a SHA-256 over `git status --porcelain=v1 --untr
 
 | Mode | Display | Logs |
 | --- | --- | --- |
-| `Dashboard` (default) | Local browser dashboard on `127.0.0.1` with Activity, Changes, and Report views and a confirmed Stop run control. Falls back to `Window`, then `Console`. | `progress.log`, `dashboard.json`, the server's fixed API |
+| `Dashboard` (default) | Local browser dashboard on `127.0.0.1` with Prompt journey, Work, Changes, and Report views and a confirmed Stop run control. Falls back to `Window`, then `Console`. | `progress.log`, `dashboard.json`, the server's fixed API |
 | `Window` | Separate read-only PowerShell window `ClaudeCX - <repo>`. Closes about 5 seconds after success; stays open 5 minutes after a failure, or until a key is pressed. | `progress.log`, `claude-events.jsonl` |
 | `Console` | `[claudecx]` lines on stderr. | same |
 | `None` | Nothing. | same |

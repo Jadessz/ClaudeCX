@@ -291,6 +291,22 @@ Assert-True ($dashboardText.Contains('$startInfo.ArgumentList.Add($argument)') -
 Assert-True ($dashboardText.Contains('-EscapeHandling EscapeHtml')) 'dashboard JSON escapes HTML-significant characters'
 Assert-True (-not $dashboardText.Contains('RedirectStandardInput = $true') -or $dashboardText.Contains('$process.StandardInput.Close()')) 'dashboard Git child gets no interactive input'
 
+Write-Host '[prompt lineage]'
+$bridgeSource = Read-RepoText 'skill/claudecx/scripts/invoke-claude.ps1'
+Assert-True ($bridgeSource.Contains('[string]$OriginalPromptPath') -and $bridgeSource.Contains('$script:MaxPromptBytes = 1048576')) 'bridge accepts -OriginalPromptPath with a 1 MiB bound'
+Assert-True ($bridgeSource.Contains("Join-Path `$turnDir 'codex-brief.md'") -and $bridgeSource.Contains("Join-Path `$turnDir 'original-prompt.md'")) 'bridge writes fixed prompt artifact names'
+Assert-True ($bridgeSource.Contains('[IO.File]::ReadAllText($codexBriefPath')) 'Claude input is read back from the copied brief'
+Assert-True ($dashboardText.Contains("'/api/prompts' = 'GET'")) 'prompts route is GET-only'
+Assert-True (-not (Read-RepoText 'skill/claudecx/scripts/ClaudeCX.Dashboard.psm1').Contains('OriginalPromptPath')) 'dashboard metadata never sees the prompt source path'
+$skillDoc = Read-RepoText 'skill/claudecx/SKILL.md'
+Assert-True (([Regex]::Matches($skillDoc, '-OriginalPromptPath "')).Count -ge 2) 'SKILL.md passes -OriginalPromptPath on initial and resumed calls'
+foreach ($doc in @('README.md', 'SECURITY.md', 'docs/ARCHITECTURE.md', 'CONTRIBUTING.md')) {
+    $docText = Read-RepoText $doc
+    Assert-True ($docText.Contains('original-prompt.md') -or $docText.Contains('dashboard-src')) "$doc documents prompt capture or the dashboard build"
+}
+Assert-True ((Read-RepoText 'SECURITY.md').Contains('GET /api/prompts')) 'SECURITY.md documents the prompts route'
+Assert-True ((Read-RepoText '.gitignore').Contains('node_modules/')) 'node_modules is ignored'
+
 Write-Host '[dashboard behavior]'
 $dashboardTest = & ([Environment]::ProcessPath) -NoProfile -NonInteractive -File (Join-Path $PSScriptRoot 'test-dashboard.ps1') 2>&1
 $dashboardExit = $LASTEXITCODE

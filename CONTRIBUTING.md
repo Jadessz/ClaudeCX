@@ -9,6 +9,23 @@
 - Keep JSON strict (no comments, no trailing commas). Text files are UTF-8 without BOM, with LF line endings (enforced by `.gitattributes`).
 - No user-specific paths, emails, session IDs, or machine assumptions in committed files.
 - Static and installer tests must not need a package-manager install, network access, or real user configuration.
+- Installed users never need Node or npm. React and Vite are contributor build tools only; the built dashboard is checked in.
+
+## Dashboard source and build
+
+The dashboard UI lives in `dashboard-src/` (React, built with Vite). The production build writes exactly three stable files to `skill/claudecx/dashboard/`: `index.html`, `app.js`, and `styles.css`, with no source maps, no inline script or style, and no external resources. The PowerShell server serves only those fixed files. Never edit the built files by hand.
+
+After changing anything in `dashboard-src/`, rebuild and check (Node 20 or later):
+
+```powershell
+npm ci
+npm run dashboard:build
+npm run dashboard:check
+```
+
+`dashboard:check` runs deterministic static and design checks: stable asset names, no source maps, no external URLs (XML namespace identifiers React needs for SVG are allowed; they are never fetched), no inline script or style, no `dangerouslySetInnerHTML` or other HTML injection, a single `fetch` call site with fixed routes, reduced-motion support, system fonts only, no emoji, glassmorphism, or purple accents. The build is deterministic; commit the rebuilt assets together with the source change. `test-static.ps1` also checks the built assets, but it does not run Node.
+
+For an optional Impeccable source scan (requires network access and is not a project dependency), run `npx --yes impeccable@latest detect dashboard-src/src`. Its source scan catches known UI anti-patterns; rendered-page checks such as contrast still require a running dashboard URL. The deterministic `dashboard:check` remains the offline project gate.
 
 ## Workflow
 

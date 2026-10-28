@@ -4,85 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <title>ClaudeCX dashboard</title>
-  <link rel="stylesheet" href="/styles.css">
-  <script src="/app.js" defer></script>
+  <meta name="color-scheme" content="dark">
+  <title>ClaudeCX control room</title>
+  <script type="module" crossorigin src="/app.js"></script>
+  <link rel="stylesheet" crossorigin href="/styles.css">
 </head>
 <body>
-  <a class="skip-link" href="#main">Skip to content</a>
-  <header class="topbar">
-    <div class="brand">
-      <span class="brand-name">ClaudeCX</span>
-      <span class="repo" id="repo-name">Loading…</span>
-    </div>
-    <div class="topbar-status">
-      <span class="badge" id="run-status" data-status="loading" role="status" aria-live="polite">Loading</span>
-      <span class="elapsed" id="elapsed" aria-label="Elapsed time">--:--</span>
-      <span class="connection" id="connection" data-state="connecting" role="status" aria-live="polite">Connecting</span>
-    </div>
-  </header>
-
-  <main id="main" class="layout">
-    <section class="card overview" aria-labelledby="overview-title">
-      <div class="card-head">
-        <h1 id="overview-title">Overview</h1>
-        <div class="controls">
-          <button type="button" id="refresh" class="button">Refresh</button>
-          <button type="button" id="stop" class="button danger" disabled>Stop run</button>
-        </div>
-      </div>
-      <div class="confirm" id="stop-confirm" role="alertdialog" aria-labelledby="stop-confirm-title" aria-describedby="stop-confirm-text" hidden>
-        <p id="stop-confirm-title" class="confirm-title">Stop this Claude run?</p>
-        <p id="stop-confirm-text">The bridge will terminate Claude and report the run as stopped. Partial edits remain in the working tree for Codex review; nothing is reverted.</p>
-        <div class="confirm-actions">
-          <button type="button" id="stop-confirm-yes" class="button danger">Yes, stop the run</button>
-          <button type="button" id="stop-confirm-no" class="button">Keep running</button>
-        </div>
-      </div>
-      <p class="notice" id="notice" role="status" aria-live="polite" hidden></p>
-      <p class="phase"><span class="label">Current activity</span><span id="phase">Waiting for activity…</span></p>
-      <dl class="facts">
-        <div><dt>Session</dt><dd><code id="session-id">—</code> <button type="button" id="copy-session" class="button small">Copy</button></dd></div>
-        <div><dt>Run</dt><dd id="run-kind">—</dd></div>
-        <div><dt>Started</dt><dd id="started-at">—</dd></div>
-        <div><dt>Timeout</dt><dd id="timeout">—</dd></div>
-        <div><dt>Turn limit</dt><dd id="max-turns">—</dd></div>
-        <div><dt>Budget limit</dt><dd id="budget">—</dd></div>
-        <div><dt>Turns used</dt><dd id="turns">—</dd></div>
-        <div><dt>Duration</dt><dd id="duration">—</dd></div>
-        <div><dt>Estimated cost</dt><dd id="cost">—</dd></div>
-      </dl>
-      <p class="final" id="final-message" hidden></p>
-    </section>
-
-    <section class="card panels">
-      <div class="tabs" role="tablist" aria-label="Run details">
-        <button type="button" role="tab" id="tab-activity" aria-controls="panel-activity" aria-selected="true">Activity</button>
-        <button type="button" role="tab" id="tab-changes" aria-controls="panel-changes" aria-selected="false" tabindex="-1">Changes</button>
-        <button type="button" role="tab" id="tab-report" aria-controls="panel-report" aria-selected="false" tabindex="-1">Report</button>
-      </div>
-
-      <div role="tabpanel" id="panel-activity" aria-labelledby="tab-activity" class="panel">
-        <p class="hint">Sanitized progress only: tool names and short path summaries. Prompts, tool input and output, and command arguments are never shown.</p>
-        <ol class="timeline" id="timeline" tabindex="0" aria-label="Activity timeline"></ol>
-        <p class="empty" id="timeline-empty">No activity yet.</p>
-      </div>
-
-      <div role="tabpanel" id="panel-changes" aria-labelledby="tab-changes" class="panel" hidden>
-        <p class="hint">Current <code>git status --short</code> and <code>git diff HEAD</code> of the repository, shown as plain text.</p>
-        <p class="state-line" id="changes-state" role="status" aria-live="polite">Not loaded yet.</p>
-        <h2 class="subhead">Status</h2>
-        <pre class="code" id="changes-status" tabindex="0"></pre>
-        <h2 class="subhead">Diff</h2>
-        <pre class="code diff" id="changes-diff" tabindex="0"></pre>
-      </div>
-
-      <div role="tabpanel" id="panel-report" aria-labelledby="tab-report" class="panel" hidden>
-        <p class="state-line" id="report-state" role="status" aria-live="polite">The structured report appears here when the run finishes.</p>
-        <div id="report-body"></div>
-      </div>
-    </section>
-  </main>
-  <footer class="footer">Local only (127.0.0.1). Closing this page does not stop Claude.</footer>
+  <div id="root"></div>
+  <noscript>The ClaudeCX dashboard needs JavaScript. Progress is also written to progress.log in the run folder.</noscript>
 </body>
 </html>

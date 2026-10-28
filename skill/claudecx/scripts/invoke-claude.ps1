@@ -6,6 +6,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$BriefPath,
 
+    # Optional: the user's original request to Codex, shown in the dashboard's prompt journey.
+    [string]$OriginalPromptPath,
+
     [string]$ResumeSessionId,
 
     [ValidateSet('auto', 'plan')]
@@ -87,6 +90,54 @@ function Write-Utf8File {
     [IO.File]::WriteAllText($Path, $Content, [Text.UTF8Encoding]::new($false))
 }
 
+# Prompt artifacts are bounded and must be strict UTF-8. They are copied byte-for-byte (minus a
+# leading BOM) into fixed files in the turn directory; source paths and contents never reach
+# metadata, logs, or process arguments.
+$script:MaxPromptBytes = 1048576
+
+function Read-PromptInput {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$Repository
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "$Label is not a file."
+    }
+    $full = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Path).Path)
+    $info = [IO.FileInfo]::new($full)
+    $candidates = @($full)
+    $target = $info.ResolveLinkTarget($true)
+    if ($null -ne $target) {
+        $candidates += [IO.Path]::GetFullPath($target.FullName)
+        $info = [IO.FileInfo]::new($target.FullName)
+    }
+    $repositoryPrefix = $Repository.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    foreach ($candidate in $candidates) {
+        if ($candidate.StartsWith($repositoryPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "$Label must be outside the repository so Claude cannot modify its own instructions."
+        }
+    }
+    if ($info.Length -gt $script:MaxPromptBytes) {
+        throw "$Label exceeds the $($script:MaxPromptBytes)-byte limit."
+    }
+    $bytes = [IO.File]::ReadAllBytes($info.FullName)
+    if ($bytes.Length -gt $script:MaxPromptBytes) {
+        throw "$Label exceeds the $($script:MaxPromptBytes)-byte limit."
+    }
+    $offset = 0
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+        $offset = 3
+    }
+    try {
+        return [Text.UTF8Encoding]::new($false, $true).GetString($bytes, $offset, $bytes.Length - $offset)
+    }
+    catch {
+        throw "$Label is not valid UTF-8."
+    }
+}
+
 function Get-PropertyValue {
     param(
         [Parameter(Mandatory = $true)][object]$Object,
@@ -108,16 +159,18 @@ if ($env:AGENT_HANDOFF_DEPTH -and $env:AGENT_HANDOFF_DEPTH -ne '0') {
 }
 
 $resolvedProject = (Resolve-Path -LiteralPath $ProjectPath).Path
-$resolvedBrief = (Resolve-Path -LiteralPath $BriefPath).Path
 if (-not (Test-Path -LiteralPath $resolvedProject -PathType Container)) {
     throw "ProjectPath is not a directory: $resolvedProject"
-}
-if (-not (Test-Path -LiteralPath $resolvedBrief -PathType Leaf)) {
-    throw "BriefPath is not a file: $resolvedBrief"
 }
 
 $repoRoot = Invoke-GitText -Repository $resolvedProject -Arguments @('rev-parse', '--show-toplevel')
 $repoRoot = (Resolve-Path -LiteralPath $repoRoot).Path
+# Validated and read before any state is created, so bad inputs fail closed before Claude starts.
+$briefText = Read-PromptInput -Path $BriefPath -Label 'BriefPath' -Repository $repoRoot
+$originalPromptText = $null
+if ($PSBoundParameters.ContainsKey('OriginalPromptPath')) {
+    $originalPromptText = Read-PromptInput -Path $OriginalPromptPath -Label 'OriginalPromptPath' -Repository $repoRoot
+}
 $headBefore = Invoke-GitText -Repository $repoRoot -Arguments @('rev-parse', 'HEAD')
 
 if (-not $StateRoot) {
@@ -219,6 +272,13 @@ try {
     $turnDir = Join-Path $sessionDir $turnName
     [IO.Directory]::CreateDirectory($turnDir) | Out-Null
     $failurePath = Join-Path $turnDir 'failure.json'
+    # Fixed prompt artifacts for this turn. The copied brief is the exact Claude input.
+    $codexBriefPath = Join-Path $turnDir 'codex-brief.md'
+    Write-ClaudeCXAtomicFile -Path $codexBriefPath -Content $briefText
+    if ($null -ne $originalPromptText) {
+        Write-ClaudeCXAtomicFile -Path (Join-Path $turnDir 'original-prompt.md') -Content $originalPromptText
+    }
+    $briefText = [IO.File]::ReadAllText($codexBriefPath, [Text.UTF8Encoding]::new($false, $true))
 
     $progressMode = $ProgressMode
     if ($progressMode -in @('Dashboard', 'Window') -and -not $IsWindows) {
@@ -241,8 +301,6 @@ try {
             -Title "ClaudeCX - $repoName" -RepositoryName $repoName -SessionId $sessionId -BridgeProcessId $PID
     }
 
-    $briefText = [IO.File]::ReadAllText($resolvedBrief, [Text.UTF8Encoding]::new($false))
-    Write-Utf8File -Path (Join-Path $turnDir 'brief.md') -Content $briefText
     Write-Utf8File -Path (Join-Path $turnDir 'status-before.txt') -Content $statusBefore
 
     $skillRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))

@@ -234,15 +234,17 @@ While Claude works, the bridge opens a local **Dashboard** in your default brows
 
 ### What it shows
 
-- **Header:** the repository name, the run status (*Active*, *Succeeded*, *Failed*, *Stopped*), elapsed time, and whether the page is connected.
-- **Overview:** the latest activity, the session ID (with a **Copy** button), whether this is a new or resumed run, start time, the timeout, turn and budget limits, and, once known, turns used, duration, and estimated cost.
-- **Activity tab:** what Claude is doing, one short line per step, for example `Tool Edit: src\routes\signup.ts` or `Tool Bash: running command`. This is the text of `progress.log`. It never shows prompts, file contents, command arguments, search text, or URLs.
+- **Command bar** (stays at the top): the repository name, the run status (*Running*, *Succeeded*, *Failed*, *Stopped*), elapsed time, whether the page is connected, and the Refresh, Copy session, and Stop run buttons.
+- **Current state:** one headline for what is happening now, the latest activity or final outcome, and a single row of facts: session, start time, turns, cost, and duration against their limits.
+- **Collaboration flow:** *Your request → Codex handoff → Claude implementation → Codex review*. Codex review is always shown as next, never as done, because it happens after the run.
+- **Prompt journey tab** (the default): your original request to Codex and the exact brief Codex sent Claude, side by side as plain text, each with its own Copy button, plus a short outline of the structure Codex added (objective, scope, constraints, acceptance criteria, tests, risks, docs) detected from the brief's Markdown headings. The outline is a literal heading match, not an AI comparison. If Codex did not pass `-OriginalPromptPath` (older or manual calls), the page says the original request was not captured; everything else works.
+- **Work tab:** what Claude is doing, one short line per step, shown as a timeline that follows the latest step (scroll up to pause following), for example `Tool Edit: src\routes\signup.ts` or `Tool Bash: running command`. This is the text of `progress.log`. It never shows prompts, file contents, command arguments, search text, or URLs.
 - **Changes tab:** the current `git status --short` and the full diff of your repository against `HEAD`, as plain text, capped at 2 MiB (a warning appears if it is cut off).
 - **Report tab:** Claude's final structured report (summary, changed files, checks, commands, denied actions, open questions, deviations from the brief, risks), or the reason the run failed or was stopped.
 
 ### Controls
 
-There are exactly three: **Refresh**, **Copy** (session ID), and **Stop run**.
+The run controls are **Refresh**, **Copy session**, and **Stop run**; the prompt journey also has a **Copy** button for each prompt.
 
 **Stop run** works only while the run is active and asks you to confirm. After you confirm:
 
@@ -257,6 +259,9 @@ There is no pause, steering, approve/reject, commit, push, or deploy control. Th
 ### Good to know
 
 - Closing the browser tab **does not stop Claude**.
+- The brief and the original request must be files **outside** your project (Codex writes them next to each other in a temporary folder). The bridge copies them into the run folder, so they stay on disk with the other logs until you delete that folder.
+- The dashboard never shows Claude's role prompt, raw event stream, reasoning, tool input or output, command arguments, search text, or hosts.
+- The page is a prebuilt static bundle shipped with the skill. You do not need Node or npm, and it loads nothing from the internet.
 - **Don't reload the page.** The access key lives only in the open tab, so a reload loses the connection. The run continues, and its progress stays in `progress.log`.
 - The dashboard server shuts itself down a few minutes after the run ends (after about 3 minutes with the page closed, at most 15 minutes), as soon as the bridge disappears, or at a hard time limit.
 - Only your own computer can reach it. It listens on `127.0.0.1` only, and each run uses a new random 256-bit access key. The key reaches the browser in the address after `#` (which browsers never send to servers), is removed from the address bar at once, and is never written to disk, logs, or your project. See [SECURITY.md](SECURITY.md#local-dashboard).
@@ -276,8 +281,8 @@ You can also ask Codex for a specific mode, or pass it yourself:
 | `-ProgressMode None` | Nothing live. The logs are still written. Useful for CI. |
 
 ```powershell
-pwsh -NoProfile -File "<skill-root>\scripts\invoke-claude.ps1" -ProjectPath . -BriefPath brief.md -ProgressMode Console
-pwsh -NoProfile -File "<skill-root>\scripts\invoke-claude.ps1" -ProjectPath . -BriefPath brief.md -ProgressMode None
+pwsh -NoProfile -File "<skill-root>\scripts\invoke-claude.ps1" -ProjectPath . -BriefPath "$env:TEMP\claudecx\brief.md" -OriginalPromptPath "$env:TEMP\claudecx\request.md" -ProgressMode Console
+pwsh -NoProfile -File "<skill-root>\scripts\invoke-claude.ps1" -ProjectPath . -BriefPath "$env:TEMP\claudecx\brief.md" -OriginalPromptPath "$env:TEMP\claudecx\request.md" -ProgressMode None
 ```
 
 `<skill-root>` is the installed skill folder, normally `%USERPROFILE%\.codex\skills\claudecx`.
@@ -358,7 +363,8 @@ Every run is logged outside your repositories:
     session.json                   # repository, starting HEAD, creation time
     last-state.sha256              # working-tree fingerprint after the last success
     <yyyyMMdd-HHmmssfff>\           # one folder per run (turn)
-      brief.md                     # the task Claude received
+      codex-brief.md               # the exact brief Claude received (sent as Claude's input)
+      original-prompt.md           # your original request, only when -OriginalPromptPath was passed
       status-before.txt / status-after.txt
       claude-events.jsonl          # raw Claude events, one JSON object per line
       claude-result.json           # Claude's final result event
@@ -484,7 +490,9 @@ skill/claudecx/                   the Codex skill (source of truth for the bridg
   scripts/watch-progress.ps1      read-only progress window
   scripts/ClaudeCX.Dashboard.psm1 dashboard API, loopback HTTP handler, stop marker, display fallback
   scripts/show-dashboard.ps1      local dashboard server (127.0.0.1 only)
-  dashboard/                      dashboard page (index.html, styles.css, app.js)
+  dashboard/                      built dashboard page (index.html, styles.css, app.js); do not edit by hand
+dashboard-src/                    React source for the dashboard, built with Vite (contributors only)
+package.json, package-lock.json   contributor-only build tooling; installing ClaudeCX never runs npm
   scripts/test-claude-bridge.ps1  deep live smoke test
 scripts/
   ClaudeCX.Common.psm1            shared installer and validation helpers
@@ -506,6 +514,14 @@ Offline (no network, no real configuration touched; run after every change):
 ```powershell
 pwsh -NoProfile -File .\scripts\test-static.ps1
 pwsh -NoProfile -File .\scripts\test-install.ps1
+```
+
+After changing the dashboard source in `dashboard-src/`, rebuild and check it (contributors only; Node 20 or later). See [CONTRIBUTING.md](CONTRIBUTING.md#dashboard-source-and-build).
+
+```powershell
+npm ci
+npm run dashboard:build
+npm run dashboard:check
 ```
 
 Live (opt-in). `scripts\test-live.ps1` **contacts Claude and uses up account usage.** It creates throwaway repositories under a new scratch folder and checks a real edit, the commit block, a UTF-8 round trip, resume, hook suppression, and a forced turn-limit failure:

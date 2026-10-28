@@ -146,6 +146,12 @@ try {
         Assert-True ((Test-Path -LiteralPath $installedFile -PathType Leaf) -and
             ([IO.File]::ReadAllText($installedFile) -ceq [IO.File]::ReadAllText($packagedFile))) "installed dashboard asset matches the package: $dashboardFile"
     }
+    $installedDashboard = @(Get-ChildItem -LiteralPath (Join-Path $destination 'dashboard') -File | ForEach-Object Name | Sort-Object)
+    Assert-True (($installedDashboard -join ',') -ceq 'app.js,index.html,styles.css') "installed dashboard holds only the prebuilt assets ($($installedDashboard -join ','))"
+    $buildArtifacts = @(Get-ChildItem -LiteralPath $destination -Recurse -Force | Where-Object { $_.Name -in @('node_modules', 'package.json', 'package-lock.json', 'dashboard-src', 'vite.config.mjs') -or $_.Name -like '*.map' })
+    Assert-True ($buildArtifacts.Count -eq 0) 'installed skill contains no Node build tooling or source maps'
+    $installerText = [IO.File]::ReadAllText((Join-Path (Get-ClaudeCXRepositoryRoot) 'install.ps1')) + [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'ClaudeCX.Common.psm1'))
+    Assert-True ($installerText -notmatch '(?i)\b(npm|npx|node\.exe|vite)\b') 'installation never invokes Node, npm, or Vite'
     Assert-True ($result.Text.Contains('$claudecx')) 'install prints the $claudecx next step'
     Assert-True (((Get-ClaudeCXTreeManifest -Root $other) -join "`n") -ceq $otherBefore) 'unrelated skill preserved'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $case.ProfileRoot '.claude'))) 'no Claude settings created without -DisableClaudeAttribution'

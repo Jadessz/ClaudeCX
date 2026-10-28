@@ -166,39 +166,53 @@ try {
     $css = [IO.File]::ReadAllText((Join-Path $dashboardRoot 'styles.css'), $utf8)
     $js = [IO.File]::ReadAllText((Join-Path $dashboardRoot 'app.js'), $utf8)
 
-    # --- Static UI source checks ---
-    Write-Host '[ui source]'
+    # --- Built UI checks (React/Vite output; source checks also run in dashboard-src/scripts/check-dashboard.mjs) ---
+    Write-Host '[ui build]'
+    $builtNames = @(Get-ChildItem -LiteralPath $dashboardRoot -File | ForEach-Object Name | Sort-Object)
+    Assert-True (($builtNames -join ',') -ceq 'app.js,index.html,styles.css') "dashboard folder holds exactly the stable built assets ($($builtNames -join ','))"
     Assert-True ($html.StartsWith('<!doctype html>')) 'index.html has a doctype'
-    Assert-True ($html -match '<script src="/app\.js" defer></script>') 'index.html loads the packaged script only'
+    Assert-True ($html -match '<script type="module" crossorigin src="/app\.js"></script>') 'index.html loads the packaged module script only'
     Assert-True (@([Regex]::Matches($html, '<script\b')).Count -eq 1) 'index.html has no inline scripts'
-    Assert-True ($html -match '<link rel="stylesheet" href="/styles\.css">') 'index.html loads the packaged stylesheet'
+    Assert-True ($html -match '<link rel="stylesheet" crossorigin href="/styles\.css">') 'index.html loads the packaged stylesheet'
     Assert-True ($html -notmatch '(?i)<style\b|\sstyle\s*=') 'index.html has no inline styles'
     Assert-True ($html -notmatch '(?i)\son[a-z]+\s*=') 'index.html has no inline event handlers'
+    # React needs XML namespace identifiers to create SVG nodes; they are never fetched.
+    $namespaceUris = 'http://www\.w3\.org/(2000/svg|1999/xlink|1998/Math/MathML|XML/1998/namespace|1999/xhtml)'
     foreach ($source in @(@('index.html', $html), @('styles.css', $css), @('app.js', $js))) {
-        Assert-True ($source[1] -notmatch '(?i)(https?:)?//[a-z0-9.-]+\.[a-z]{2,}|wss?://') "$($source[0]) references no external origin"
+        $withoutNamespaces = $source[1] -replace $namespaceUris, ''
+        Assert-True ($withoutNamespaces -notmatch '(?i)(https?:)?//[a-z0-9.-]+\.[a-z]{2,}|wss?://') "$($source[0]) references no external origin"
+        Assert-True ($source[1] -notmatch 'sourceMappingURL') "$($source[0]) has no source map reference"
+        Assert-True (-not $source[1].Contains("`r") -and -not $source[1].StartsWith([string][char]0xFEFF, [StringComparison]::Ordinal)) "$($source[0]) is LF without BOM"
     }
     Assert-True ($css -notmatch '(?i)@import|url\(') 'styles.css loads no other resources'
     Assert-True ($css.Contains('prefers-reduced-motion')) 'styles.css honours prefers-reduced-motion'
-    foreach ($pattern in @('innerHTML', 'outerHTML', 'insertAdjacentHTML', 'document.write', 'eval(', 'new Function', 'setTimeout("', "setTimeout('", 'localStorage', 'sessionStorage', 'window.open', 'location.href =')) {
+    foreach ($pattern in @('eval(', 'new Function(', 'localStorage', 'sessionStorage', 'window.open(')) {
         Assert-True (-not $js.Contains($pattern)) "app.js does not use $pattern"
     }
-    Assert-True ($js.Contains('textContent')) 'app.js renders with textContent'
-    Assert-True ($js.Contains('history.replaceState') -and $js.Contains("'Authorization': 'Bearer ' + token")) 'app.js removes the fragment and sends the token in a header'
-    Assert-True (@([Regex]::Matches($js, '\bfetch\(')).Count -eq 1 -and $js.Contains('fetch(path,')) 'app.js has a single fetch call site'
-    $apiCalls = @([Regex]::Matches($js, '(?<!function )\bapi\(([^,)]+)') | ForEach-Object { $_.Groups[1].Value.Trim() } | Sort-Object -Unique)
-    Assert-True (@($apiCalls | Where-Object { $_ -notmatch '^API_(STATE|CHANGES|REPORT|STOP)$' }).Count -eq 0) "app.js calls only fixed API constants ($($apiCalls -join ', '))"
-    foreach ($id in @([Regex]::Matches($js, "el\('([a-z-]+)'\)") | ForEach-Object { $_.Groups[1].Value })) {
-        Assert-True ($html.Contains("id=`"$id`"")) "index.html defines #$id used by app.js"
+    foreach ($route in @('/api/state', '/api/changes', '/api/report', '/api/prompts', '/api/stop')) {
+        Assert-True ($js.Contains("`"$route`"")) "app.js calls $route"
     }
-    foreach ($source in @(@('styles.css', $css, '{', '}'), @('app.js', $js, '{', '}'), @('app.js', $js, '(', ')'), @('app.js', $js, '[', ']'))) {
-        $open = $source[1].Split($source[2]).Count - 1
-        $close = $source[1].Split($source[3]).Count - 1
-        Assert-True ($open -eq $close) "$($source[0]) has balanced '$($source[2])$($source[3])' ($open/$close)"
+    Assert-True ($js.Contains('history.replaceState') -and $js.Contains('"Bearer "+')) 'app.js removes the fragment and sends the token in a header'
+    Assert-True ($js.Contains('Partial edits remain in the working tree for Codex review') -and $js.Contains('Stop requested…')) 'stop confirmation explains that partial edits remain'
+    Assert-True ($js.Contains('Original request not captured') -and $js.Contains('a reload cannot reconnect')) 'app.js explains a missing original request and the memory-only token'
+    Assert-True ($js.Contains('role:"tablist"') -and $js.Contains('"aria-live":"polite"')) 'app.js exposes accessible tabs and live regions'
+    foreach ($sourceFile in @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'dashboard-src\src') -File -Recurse)) {
+        $sourceText = [IO.File]::ReadAllText($sourceFile.FullName, $utf8)
+        Assert-True (-not $sourceText.Contains('dangerouslySetInnerHTML') -and -not $sourceText.Contains('innerHTML')) "React source $($sourceFile.Name) never injects HTML"
+        Assert-True ($sourceText -notmatch 'rehype-raw|rehypePlugins|remarkPlugins|allowDangerousHtml') "React source $($sourceFile.Name) enables no raw-HTML Markdown plugin"
     }
-    Assert-True ($js.Contains("'use strict'")) 'app.js runs in strict mode'
-    Assert-True ($html.Contains('role="tablist"') -and $html.Contains('aria-selected') -and $html.Contains('aria-live')) 'index.html exposes accessible tabs and live regions'
-    Assert-True ($html.Contains('Partial edits remain in the working tree for Codex review')) 'stop confirmation explains that partial edits remain'
-    Assert-True ($js.Contains('Stop requested…')) 'app.js shows Stop requested after confirming'
+    # Report summaries render as restricted Markdown; every other surface stays plain text.
+    $markdownSource = [IO.File]::ReadAllText((Join-Path $repoRoot 'dashboard-src\src\safe-markdown.js'), $utf8)
+    Assert-True ($markdownSource.Contains('skipHtml: true') -and $markdownSource.Contains('unwrapDisallowed: true') -and $markdownSource.Contains('urlTransform: noUrl') -and
+        $markdownSource.Contains("const noUrl = () => '';") -and $markdownSource.Contains("createElement('span', { className: 'md-link' }")) 'summary Markdown skips raw HTML, discards URLs, and renders links as text'
+    $allowedList = [Regex]::Match($markdownSource, 'SUMMARY_ALLOWED_ELEMENTS = \[([^\]]*)\]').Groups[1].Value
+    $allowedTags = @([Regex]::Matches($allowedList, "'([a-z0-9]+)'") | ForEach-Object { $_.Groups[1].Value } | Sort-Object)
+    Assert-True (($allowedTags -join ',') -ceq 'a,blockquote,br,code,em,h1,h2,h3,h4,h5,h6,hr,li,ol,p,pre,strong,ul') "summary Markdown allows only fixed text elements ($($allowedTags -join ','))"
+    $viewsSource = [IO.File]::ReadAllText((Join-Path $repoRoot 'dashboard-src\src\views.jsx'), $utf8)
+    Assert-True (@([Regex]::Matches($viewsSource, '<SafeMarkdown\b')).Count -eq 1 -and $viewsSource.Contains('<SafeMarkdown text={body.summary} />')) 'Markdown is used only for the report summary'
+    Assert-True ($viewsSource.Contains('<pre className="document-body" tabIndex={0} aria-label={title}>{text}</pre>')) 'prompt documents stay exact plain text'
+    $packageText = [IO.File]::ReadAllText((Join-Path $repoRoot 'package.json'), $utf8)
+    Assert-True ($packageText -notmatch 'rehype-raw|rehype-sanitize|html-react-parser|remark-html') 'no raw-HTML Markdown package is a dependency'
 
     # --- Token generation and comparison ---
     Write-Host '[token]'
@@ -217,6 +231,11 @@ try {
     $turn = New-TurnDirectory -Name 'turn-main' -Repository $repo -BridgeProcessId $PID
     [IO.File]::WriteAllText((Join-Path $turn.Directory 'brief.md'), "Secret brief BRIEF-CANARY-91d2 PROMPT-CANARY-77aa`n", $utf8)
     [IO.File]::WriteAllText((Join-Path $turn.Directory 'claude-stderr.txt'), "STDERR-CANARY-0c7e`n", $utf8)
+    $originalPrompt = "Please add a greeting ORIGINAL-CANARY-4e1a`nქართული: გამარჯობა, მსოფლიო <b>&</b>`n"
+    $codexBrief = "# Task`n`n## Objective`n- CODEX-BRIEF-CANARY-7c3d გამარჯობა`n`n## Acceptance criteria`n- one`n- two`n"
+    $promptCanaries = @('ORIGINAL-CANARY-4e1a', 'CODEX-BRIEF-CANARY-7c3d', 'გამარჯობა')
+    [IO.File]::WriteAllText((Join-Path $turn.Directory 'original-prompt.md'), $originalPrompt, $utf8)
+    [IO.File]::WriteAllText((Join-Path $turn.Directory 'codex-brief.md'), $codexBrief, $utf8)
     $sink = New-ClaudeCXProgressSink -Mode 'None' -ProgressPath (Join-Path $turn.Directory 'progress.log') -DonePath (Join-Path $turn.Directory 'progress.done')
     $stream = New-ClaudeCXStreamState -EventsPath (Join-Path $turn.Directory 'claude-events.jsonl') -RepositoryRoot $repo
     $events = @(
@@ -322,6 +341,45 @@ try {
     Assert-True (-not $response.Body.Contains($repo)) 'state does not contain the full repository path'
 
     # --- Changes ---
+    Write-Host '[prompts]'
+    Assert-True ((Invoke-Raw -Port $port -Target '/api/prompts').Status -eq 401) 'prompts without a token is 401'
+    Assert-True ((Invoke-Raw -Port $port -Target '/api/prompts' -Headers @{ Authorization = "Bearer $tokenA" }).Status -eq 401) 'prompts with a wrong token is 401'
+    Assert-True ((Invoke-Raw -Port $port -Target '/api/prompts' -Headers $auth -HostHeader "localhost:$port").Status -eq 421) 'prompts with a foreign Host is 421'
+    foreach ($method in @('POST', 'PUT', 'DELETE')) {
+        $response = Invoke-Raw -Port $port -Method $method -Target '/api/prompts' -Headers $auth
+        Assert-True ($response.Status -eq 405 -and $response.Headers['allow'] -ceq 'GET') "prompts $method is 405 with Allow: GET"
+    }
+    foreach ($unauthorized in @((Invoke-Raw -Port $port -Target '/api/prompts'), (Invoke-Raw -Port $port -Target '/api/state'), (Invoke-Raw -Port $port -Target '/'))) {
+        foreach ($canary in $promptCanaries) {
+            Assert-True (-not $unauthorized.Body.Contains($canary)) "unauthenticated or static response does not disclose $canary"
+        }
+    }
+    $response = Invoke-Raw -Port $port -Target '/api/prompts' -Headers $auth
+    Assert-True ($response.Status -eq 200 -and $response.Headers['content-type'] -like 'application/json*') 'prompts is 200 JSON'
+    $prompts = $response.Body | ConvertFrom-Json
+    $promptKeys = @($prompts.PSObject.Properties.Name | Sort-Object)
+    Assert-True (($promptKeys -join ',') -ceq 'brief_available,codex_brief,max_bytes,original_available,original_prompt') "prompts returns only the intended fields ($($promptKeys -join ','))"
+    Assert-True ($prompts.original_available -and $prompts.original_prompt -ceq $originalPrompt) 'original request survives exactly, including Georgian text'
+    Assert-True ($prompts.brief_available -and $prompts.codex_brief -ceq $codexBrief) 'Codex brief survives exactly'
+    Assert-True ($prompts.max_bytes -eq 1048576) 'prompts reports the 1 MiB bound'
+    Assert-True (-not $response.Body.Contains('<b>') -and -not $response.Body.Contains('BRIEF-CANARY-91d2')) 'prompt markup is JSON-escaped and legacy brief.md is not served'
+    Assert-True (-not $response.Body.Contains($token)) 'prompts holds no token'
+    $stateBody = (Invoke-Raw -Port $port -Target '/api/state' -Headers $auth).Body
+    foreach ($canary in $promptCanaries) {
+        Assert-True (-not $stateBody.Contains($canary)) "state does not disclose prompt text $canary"
+        foreach ($artifact in @($turn.Metadata, (Join-Path $turn.Directory 'progress.log'), (Join-Path $turn.Directory 'dashboard-endpoint.json'))) {
+            Assert-True (-not (Read-Shared $artifact).Contains($canary)) "$([IO.Path]::GetFileName($artifact)) does not contain $canary"
+        }
+    }
+    $noPromptTurn = New-TurnDirectory -Name 'turn-no-prompt' -Repository $repo -BridgeProcessId $PID
+    [IO.File]::WriteAllText((Join-Path $noPromptTurn.Directory 'codex-brief.md'), $codexBrief, $utf8)
+    $absent = Get-ClaudeCXDashboardPrompts -Metadata (Read-ClaudeCXDashboardMetadata -MetadataPath $noPromptTurn.Metadata)
+    Assert-True (-not $absent.original_available -and $null -eq $absent.original_prompt -and $absent.brief_available) 'missing original prompt is a normal unavailable state'
+    [IO.File]::WriteAllBytes((Join-Path $noPromptTurn.Directory 'original-prompt.md'), [byte[]](0x61, 0xC3, 0x28))
+    [IO.File]::WriteAllText((Join-Path $noPromptTurn.Directory 'codex-brief.md'), ('x' * 1048577), $utf8)
+    $invalid = Get-ClaudeCXDashboardPrompts -Metadata (Read-ClaudeCXDashboardMetadata -MetadataPath $noPromptTurn.Metadata)
+    Assert-True (-not $invalid.original_available -and -not $invalid.brief_available) 'invalid UTF-8 and oversized prompt artifacts are not served'
+
     Write-Host '[changes]'
     $response = Invoke-Raw -Port $port -Target '/api/changes' -Headers $auth
     $changes = $response.Body | ConvertFrom-Json
@@ -463,11 +521,12 @@ try {
     $fakeBin = Join-Path $sandbox 'fake-bin'
     [IO.Directory]::CreateDirectory($fakeBin) | Out-Null
     $fakePidFile = Join-Path $sandbox 'fake-claude.pid'
+    $fakeStdinFile = Join-Path $sandbox 'fake-claude-stdin.bin'
     $fakeCmd = @(
         '@echo off',
         'echo {"type":"system","subtype":"init","model":"fake-model"}',
         'echo partial> partial-edit.txt',
-        ('"{0}" -NoProfile -NonInteractive -Command "Set-Content -LiteralPath ''{1}'' -Value $PID; Start-Sleep -Seconds 120"' -f $pwshPath, $fakePidFile)
+        ('"{0}" -NoProfile -NonInteractive -Command "$i = [Console]::OpenStandardInput(); $o = [IO.File]::Create(''{2}''); $i.CopyTo($o); $o.Close(); Set-Content -LiteralPath ''{1}'' -Value $PID; Start-Sleep -Seconds 120"' -f $pwshPath, $fakePidFile, $fakeStdinFile)
     ) -join "`r`n"
     [IO.File]::WriteAllText((Join-Path $fakeBin 'claude.cmd'), $fakeCmd + "`r`n", $utf8)
     $searchPath = @($fakeBin, $gitDir, $pwshDir, $systemDir) -join [IO.Path]::PathSeparator
@@ -480,10 +539,55 @@ try {
         Assert-True $false "restricted PATH contains a real Claude executable; bridge stop test skipped ($($otherClaude -join ', '))"
     }
     else {
+        # --- Prompt inputs fail closed before Claude starts ---
+        Write-Host '[bridge inputs]'
+        $inputRepo = New-TestRepository 'repo-inputs'
+        $goodBrief = Join-Path $sandbox 'input-good-brief.md'
+        [IO.File]::WriteAllText($goodBrief, "Good brief`n", $utf8)
+        $insideFile = Join-Path $inputRepo 'inside-brief.md'
+        [IO.File]::WriteAllText($insideFile, "Inside brief`n", $utf8)
+        $oversized = Join-Path $sandbox 'input-oversized.md'
+        [IO.File]::WriteAllText($oversized, ('x' * 1048577), $utf8)
+        $invalidUtf8 = Join-Path $sandbox 'input-invalid.md'
+        [IO.File]::WriteAllBytes($invalidUtf8, [byte[]](0x61, 0xC3, 0x28, 0x0A))
+        $inputCases = @(
+            @{ Name = 'inside-repository brief'; Brief = $insideFile; Original = $null; Expect = 'BriefPath must be outside the repository' },
+            @{ Name = 'inside-repository original prompt'; Brief = $goodBrief; Original = $insideFile; Expect = 'OriginalPromptPath must be outside the repository' },
+            @{ Name = 'oversized brief'; Brief = $oversized; Original = $null; Expect = 'BriefPath exceeds the 1048576-byte limit' },
+            @{ Name = 'missing original prompt'; Brief = $goodBrief; Original = (Join-Path $sandbox 'missing-original.md'); Expect = 'OriginalPromptPath is not a file' },
+            @{ Name = 'invalid UTF-8 original prompt'; Brief = $goodBrief; Original = $invalidUtf8; Expect = 'OriginalPromptPath is not valid UTF-8' }
+        )
+        foreach ($case in $inputCases) {
+            $caseState = Join-Path $sandbox ('input-state-' + [Guid]::NewGuid().ToString('N'))
+            $caseArgs = @('-NoProfile', '-NonInteractive', '-File', $bridgeScript, '-ProjectPath', $inputRepo, '-BriefPath', $case.Brief,
+                '-StateRoot', $caseState, '-ProgressMode', 'None', '-TimeoutSeconds', '60', '-MaxTurns', '1', '-MaxBudgetUsd', '0.01')
+            if ($case.Original) { $caseArgs += @('-OriginalPromptPath', $case.Original) }
+            $caseInfo = [Diagnostics.ProcessStartInfo]::new()
+            $caseInfo.FileName = $pwshPath
+            $caseInfo.UseShellExecute = $false
+            $caseInfo.CreateNoWindow = $true
+            $caseInfo.RedirectStandardOutput = $true
+            $caseInfo.RedirectStandardError = $true
+            foreach ($argument in $caseArgs) { $caseInfo.ArgumentList.Add($argument) }
+            $caseInfo.Environment['PATH'] = $searchPath
+            $caseInfo.Environment.Remove('AGENT_HANDOFF_DEPTH') | Out-Null
+            $caseInfo.Environment['LOCALAPPDATA'] = Join-Path $sandbox 'bridge-localappdata'
+            $caseProcess = [Diagnostics.Process]::Start($caseInfo)
+            $script:cleanup.Add($caseProcess)
+            $caseErr = $caseProcess.StandardError.ReadToEndAsync()
+            $null = $caseProcess.StandardOutput.ReadToEnd()
+            $caseProcess.WaitForExit()
+            $stateFiles = @(Get-ChildItem -LiteralPath $caseState -Recurse -File -ErrorAction SilentlyContinue)
+            Assert-True ($caseProcess.ExitCode -ne 0 -and $caseErr.Result.Contains($case.Expect)) "$($case.Name) is refused ($($caseErr.Result.Trim()))"
+            Assert-True (-not (Test-Path -LiteralPath $fakePidFile) -and $stateFiles.Count -eq 0) "$($case.Name) fails before any state is created or Claude starts"
+        }
+
         $bridgeRepo = New-TestRepository 'repo-bridge'
         $stateRoot = Join-Path $sandbox 'bridge-state'
         $briefPath = Join-Path $sandbox 'bridge-brief.md'
-        [IO.File]::WriteAllText($briefPath, "Fake brief BRIEF-CANARY-91d2`n", $utf8)
+        [IO.File]::WriteAllText($briefPath, "Fake brief BRIEF-CANARY-91d2`n## Constraints`n- keep it`n", $utf8)
+        $originalPath = Join-Path $sandbox 'bridge-original.md'
+        [IO.File]::WriteAllText($originalPath, "Original ORIGINAL-CANARY-4e1a: $([char]0x10D2)$([char]0x10D0)$([char]0x10DB)$([char]0x10D0)$([char]0x10E0)$([char]0x10EF)$([char]0x10DD)$([char]0x10D1)$([char]0x10D0)`n", $utf8)
         $bystander = Start-Sleeper
         $startInfo = [Diagnostics.ProcessStartInfo]::new()
         $startInfo.FileName = $pwshPath
@@ -491,7 +595,7 @@ try {
         $startInfo.CreateNoWindow = $true
         $startInfo.RedirectStandardOutput = $true
         $startInfo.RedirectStandardError = $true
-        foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', $bridgeScript, '-ProjectPath', $bridgeRepo, '-BriefPath', $briefPath,
+        foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', $bridgeScript, '-ProjectPath', $bridgeRepo, '-BriefPath', $briefPath, '-OriginalPromptPath', $originalPath,
                 '-StateRoot', $stateRoot, '-ProgressMode', 'None', '-TimeoutSeconds', '120', '-MaxTurns', '3', '-MaxBudgetUsd', '0.01')) {
             $startInfo.ArgumentList.Add($argument)
         }
@@ -515,6 +619,14 @@ try {
             $fingerprintBefore = [IO.File]::ReadAllText((Join-Path $sessionDir 'last-state.sha256'))
             $fakePid = [int]([IO.File]::ReadAllText($fakePidFile).Trim())
             Assert-True ($null -ne (Get-Process -Id $fakePid -ErrorAction SilentlyContinue)) 'fake Claude child process is running'
+            $copiedBrief = [IO.File]::ReadAllBytes((Join-Path $script:bridgeTurn 'codex-brief.md'))
+            $copiedOriginal = [IO.File]::ReadAllBytes((Join-Path $script:bridgeTurn 'original-prompt.md'))
+            Assert-True ([Convert]::ToHexString($copiedBrief) -ceq [Convert]::ToHexString([IO.File]::ReadAllBytes($briefPath))) 'codex-brief.md is a byte-exact copy of the brief'
+            Assert-True ([Convert]::ToHexString($copiedOriginal) -ceq [Convert]::ToHexString([IO.File]::ReadAllBytes($originalPath))) 'original-prompt.md is a byte-exact copy, including Georgian text'
+            Assert-True ([Convert]::ToHexString([IO.File]::ReadAllBytes($fakeStdinFile)) -ceq [Convert]::ToHexString($copiedBrief)) 'Claude stdin is exactly the copied brief'
+            Assert-True (-not (Test-Path -LiteralPath (Join-Path $script:bridgeTurn 'brief.md'))) 'no second brief copy is written'
+            $bridgeLog = Read-Shared (Join-Path $script:bridgeTurn 'progress.log')
+            Assert-True (-not $bridgeLog.Contains('ORIGINAL-CANARY-4e1a') -and -not $bridgeLog.Contains('BRIEF-CANARY-91d2') -and -not $bridgeLog.Contains($originalPath)) 'progress log holds no prompt text or prompt path'
             $clock = [Diagnostics.Stopwatch]::StartNew()
             $null = Request-ClaudeCXStop -TurnDirectory $script:bridgeTurn
             $exited = $bridge.WaitForExit(30000)

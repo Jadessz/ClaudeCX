@@ -30,32 +30,36 @@ Do not paste secrets or sensitive `.env` content. Prefer paths and symbols over 
 
 ## Run Claude
 
-Invoke `scripts/invoke-claude.ps1` with the repository root and brief path. Use the default `auto` permission mode. The wrapper must fail if auto mode is unavailable; never retry with a more permissive mode and never use `--dangerously-skip-permissions`.
+Before invoking, write the user's original request (their message to you, verbatim) to a separate UTF-8 file **outside the repository**, next to the brief, and pass it with `-OriginalPromptPath`. The dashboard can only show the original request when this parameter is supplied; without it the run still works and the dashboard says the request was not captured. Both files must be outside the repository and at most 1 MiB; the wrapper refuses inside-repository, missing, oversized, or invalid UTF-8 inputs before Claude starts.
+
+Invoke `scripts/invoke-claude.ps1` with the repository root, the brief path, and the original-request path. Use the default `auto` permission mode. The wrapper must fail if auto mode is unavailable; never retry with a more permissive mode and never use `--dangerously-skip-permissions`.
 
 ```powershell
 pwsh -NoProfile -File "<skill-root>\scripts\invoke-claude.ps1" `
   -ProjectPath "<repo-root>" `
   -BriefPath "<brief.md>" `
+  -OriginalPromptPath "<original-request.md>" `
   -MaxTurns 60 `
   -MaxBudgetUsd 5
 ```
 
-By default (`-ProgressMode Dashboard`) the wrapper opens a local dashboard in the default browser at `http://127.0.0.1:<port>/` (loopback only, per-run token in the URL fragment). It shows the sanitized activity, the current `git status --short` and diff against HEAD, and the final report or failure reason. Its only control besides Refresh and Copy is a confirmed **Stop run**, which asks the bridge (through `stop-request.json` in the turn folder) to terminate Claude; the run then fails with `status: stopped`, partial edits stay in the working tree, and you must review them like any other failure. Tell the user the dashboard is there, that closing it does not stop Claude, and that Stop run does not revert edits. If the dashboard cannot start, the wrapper warns on stderr and falls back to `-ProgressMode Window`, then `Console`, with the same Claude flags.
+By default (`-ProgressMode Dashboard`) the wrapper opens a local dashboard in the default browser at `http://127.0.0.1:<port>/` (loopback only, per-run token in the URL fragment). It shows the collaboration flow (your request, the Codex handoff, Claude's implementation, then Codex review as the next step), the prompt journey (the exact original request and the exact brief Claude received, as plain text with a heading-derived outline of the structure you added), the sanitized activity, the current `git status --short` and diff against HEAD, and the final report or failure reason. Its only control besides Refresh and Copy is a confirmed **Stop run**, which asks the bridge (through `stop-request.json` in the turn folder) to terminate Claude; the run then fails with `status: stopped`, partial edits stay in the working tree, and you must review them like any other failure. Tell the user the dashboard is there, that closing it does not stop Claude, and that Stop run does not revert edits. If the dashboard cannot start, the wrapper warns on stderr and falls back to `-ProgressMode Window`, then `Console`, with the same Claude flags.
 
 With `-ProgressMode Window` the wrapper opens a separate read-only PowerShell window titled `ClaudeCX - <repo>` that shows one sanitized line per phase or tool action (tool and phase names, generic activity labels, and safe repository-relative paths; shell commands appear only as `running command` or `running <program>`, searches as `searching`, and URL tools as `requesting URL`; patterns, queries, hosts, prompts, and arguments are never shown). Tell the user it is there: it is only an observer, typing in it does nothing, and closing it does not stop Claude. It closes shortly after success and stays open after a failure. Use `-ProgressMode Console` to send progress to stderr instead (stdout still carries only the final JSON line), or `-ProgressMode None` for no live display, for example in CI or headless terminals. If the window cannot open, the wrapper warns on stderr and continues in `Console` mode with the same Claude flags. Displayed paths are shortened and masked, but a file name can still be sensitive. The raw commands are kept only in `claude-events.jsonl`.
 
-Each turn folder keeps `claude-events.jsonl` (raw stream-json events), `claude-result.json` (final result event), `claude-stderr.txt`, and `progress.log` (the sanitized progress the dashboard and window show). A stopped run writes `failure.json` with `status: stopped`. The success JSON includes `events_path` and `progress_log_path`.
+Each turn folder keeps `codex-brief.md` (the exact brief Claude received; the wrapper sends this copy as Claude's input), `original-prompt.md` (only when `-OriginalPromptPath` was passed), `claude-events.jsonl` (raw stream-json events), `claude-result.json` (final result event), `claude-stderr.txt`, and `progress.log` (the sanitized progress the dashboard and window show). A stopped run writes `failure.json` with `status: stopped`. The success JSON includes `events_path` and `progress_log_path`.
 
 The wrapper uses `--safe-mode`, a bridge-only settings file, an explicit role system prompt, strict empty MCP configuration, disabled auto-memory and background tasks, a preassigned UUID, stream-json transport with a structured final report, a timeout, a budget ceiling, and handoff state under `%LOCALAPPDATA%\CodexClaude\handoffs`. Safe mode preserves OAuth/keychain authentication; bare mode does not and is therefore unsuitable for subscription-authenticated Claude Code.
 
 ## Resume
 
-Resume only to address review feedback or finish the same scoped implementation. Pass the reported session UUID and a new brief. The wrapper re-sends the role system prompt and all safety flags.
+Resume only to address review feedback or finish the same scoped implementation. Pass the reported session UUID, a new brief, and the user's new follow-up request as `-OriginalPromptPath` (a fresh file outside the repository); each turn captures its own copies. The wrapper re-sends the role system prompt and all safety flags.
 
 ```powershell
 pwsh -NoProfile -File "<skill-root>\scripts\invoke-claude.ps1" `
   -ProjectPath "<repo-root>" `
   -BriefPath "<follow-up.md>" `
+  -OriginalPromptPath "<follow-up-request.md>" `
   -ResumeSessionId "<uuid>"
 ```
 
