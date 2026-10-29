@@ -93,6 +93,8 @@ pwsh -NoProfile -File .\install.ps1
 
 This validates the skill, copies it to `%USERPROFILE%\.codex\skills\claudecx` (or `CODEX_HOME\skills\claudecx`), unblocks the copy, and then runs the setup checks. If it says ClaudeCX is already installed, add `-Force` (the old copy is backed up first).
 
+The installer also adds a **ClaudeCX** Start menu shortcut for the control center. Add `-NoShortcut` if the user does not want it, or `-StartAtLogin` if they want the control center started whenever they sign in.
+
 Optional, only if the user wants it: `-DisableClaudeAttribution` stops Claude from adding itself as a co-author to the user's own commits. It edits three keys in `%USERPROFILE%\.claude\settings.json` and backs the file up first. Ask before using it.
 
 ### Step 6: Confirm everything is ready
@@ -135,12 +137,13 @@ Tell the user, in plain words:
 2. **Open a Codex chat in a Git project with at least one commit and no uncommitted changes.** ClaudeCX refuses to start on a dirty tree, so their own work is never mixed with Claude's.
 3. **Type `$claudecx` and the request**, for example: `$claudecx add a dark mode toggle to the settings page and remember the choice`.
 4. **Approve the bridge command if Codex asks.** It needs network access (Claude talks to Anthropic) and writes logs to `%LOCALAPPDATA%\CodexClaude\handoffs`. With the Codex CLI, a sandbox without network access blocks Claude; approve running the command outside the sandbox.
-5. **Watch the dashboard** that opens in the browser. Closing it does not stop Claude; **Stop run** does.
+5. **Watch the run** in the browser. **ClaudeCX** in the Start menu opens the control center, which shows the live run, every past run, settings (budget, turns, time, model, protected paths), and setup health. Closing the page does not stop Claude; **Stop run** does.
 6. **Review and commit.** Codex reports what changed and what it checked. Nothing is committed automatically.
 
 ## 5. Facts you may need later
 
 - **Run logs:** `%LOCALAPPDATA%\CodexClaude\handoffs\<repo-key>\<session>\<turn>\`. When the Codex desktop app runs the bridge, Windows redirects this to `%LOCALAPPDATA%\Packages\OpenAI.Codex_<id>\LocalCache\Local\CodexClaude\handoffs\`.
+- **Settings:** `pwsh -NoProfile -File "$env:USERPROFILE\.codex\skills\claudecx\scripts\claudecx-settings.ps1"` shows them; add `-Set name=value` to change one. Do not change settings the user did not ask for.
 - **Update:** `git pull`, then `pwsh -NoProfile -File .\install.ps1 -Force`.
 - **Uninstall:** `pwsh -NoProfile -File .\uninstall.ps1 -Yes` (moves the skill to a backup) or add `-Permanent` to delete it.
 - **Problems after setup:** see the Troubleshooting section of [README.md](../README.md#12-troubleshooting).

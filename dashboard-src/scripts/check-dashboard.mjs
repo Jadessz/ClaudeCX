@@ -67,8 +67,16 @@ const fetchSites = sources.flatMap((file) => (readFileSync(file, 'utf8').match(/
 check(fetchSites.length === 1 && fetchSites[0].endsWith('api.js'), 'source has a single fetch call site in api.js');
 const apiSource = readFileSync(join(srcDir, 'api.js'), 'utf8');
 check(apiSource.includes("history.replaceState") && apiSource.includes("'Authorization': 'Bearer ' + token"), 'api.js strips the fragment token and sends it as a bearer header');
-const routes = [...apiSource.matchAll(/'(\/api\/[a-z]+)'/g)].map((match) => match[1]).sort();
-check(routes.join(',') === '/api/changes,/api/prompts,/api/report,/api/state,/api/stop', 'api.js uses only the fixed API routes (' + routes.join(',') + ')');
+const routes = [...apiSource.matchAll(/'(\/api\/[a-z/]+)'/g)].map((match) => match[1]).sort();
+const expectedRoutes = [
+  '/api/center', '/api/center/quit', '/api/changes', '/api/health', '/api/logs/prune', '/api/prompts', '/api/report',
+  '/api/run/changes', '/api/run/prompts', '/api/run/report', '/api/run/state', '/api/run/stop', '/api/runs', '/api/settings',
+  '/api/state', '/api/stop'
+];
+check(routes.join(',') === expectedRoutes.join(','), 'api.js uses only the fixed API routes (' + routes.join(',') + ')');
+check(apiSource.includes("'?run=' + encodeURIComponent(runId)"), 'control center runs are addressed by an encoded ?run= id only');
+const otherFetchPaths = sources.filter((file) => !file.endsWith('api.js')).flatMap((file) => readFileSync(file, 'utf8').match(/'\/api\/[^']*'/g) || []);
+check(otherFetchPaths.length === 0, 'API paths appear only in api.js (' + otherFetchPaths.join(',') + ')');
 
 // --- Restricted Markdown (report summary only) ---
 const markdownSource = readFileSync(join(srcDir, 'safe-markdown.js'), 'utf8');

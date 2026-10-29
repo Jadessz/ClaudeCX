@@ -14,6 +14,8 @@ param(
     [ValidateSet('auto', 'plan')]
     [string]$PermissionMode = 'auto',
 
+    # The three limits below come from the user's ClaudeCX settings. A value passed here can only
+    # lower them for this run; a higher value is capped at the user's setting.
     [ValidateRange(1, 500)]
     [int]$MaxTurns = 60,
 
@@ -27,6 +29,7 @@ param(
 
     # Dashboard: local browser dashboard (Windows; falls back to Window, then Console).
     # Window: read-only progress window (Windows). Console: progress on stderr. None: logs only.
+    # When omitted, the user's progress_display setting decides.
     [ValidateSet('Dashboard', 'Window', 'Console', 'None')]
     [string]$ProgressMode = 'Dashboard'
 )
@@ -153,6 +156,7 @@ function Get-PropertyValue {
 
 Import-Module (Join-Path $PSScriptRoot 'ClaudeCX.Progress.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'ClaudeCX.Dashboard.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'ClaudeCX.Settings.psm1') -Force
 
 if ($env:AGENT_HANDOFF_DEPTH -and $env:AGENT_HANDOFF_DEPTH -ne '0') {
     throw 'Nested agent handoffs are disabled. Claude may not invoke the Codex-to-Claude bridge.'
@@ -175,6 +179,28 @@ $briefText = Read-PromptInput -Path $BriefPath -Label 'BriefPath' -Repository $r
 $originalPromptText = $null
 if ($PSBoundParameters.ContainsKey('OriginalPromptPath')) {
     $originalPromptText = Read-PromptInput -Path $OriginalPromptPath -Label 'OriginalPromptPath' -Repository $repoRoot
+}
+
+# The user's settings set the limits; the committed .claudecx.json and the values Codex passes can
+# only lower them. Problems in either file stop the run before Claude starts.
+$userSettings = Read-ClaudeCXUserSettings
+if ($userSettings.Errors.Count -gt 0) {
+    throw "Your ClaudeCX settings file has problems: $($userSettings.Errors -join ' ') Fix them in the control center, with scripts\claudecx-settings.ps1, or by deleting $($userSettings.Path)."
+}
+$projectSettings = Read-ClaudeCXProjectSettings -Repository $repoRoot
+if ($projectSettings.Errors.Count -gt 0) {
+    throw "This repository's $(Get-ClaudeCXProjectFileName) has problems: $($projectSettings.Errors -join ' ')"
+}
+$requestedLimits = @{}
+foreach ($name in @('MaxTurns', 'MaxBudgetUsd', 'TimeoutSeconds')) {
+    if ($PSBoundParameters.ContainsKey($name)) { $requestedLimits[$name] = $PSBoundParameters[$name] }
+}
+$runSettings = Resolve-ClaudeCXRunSettings -User $userSettings.Values -Project $projectSettings.Values -Requested $requestedLimits
+$MaxTurns = $runSettings.MaxTurns
+$MaxBudgetUsd = $runSettings.MaxBudgetUsd
+$TimeoutSeconds = $runSettings.TimeoutSeconds
+if (-not $PSBoundParameters.ContainsKey('ProgressMode')) {
+    $ProgressMode = $runSettings.ProgressMode
 }
 $headBefore = Invoke-GitText -Repository $repoRoot -Arguments @('rev-parse', 'HEAD')
 
@@ -226,6 +252,13 @@ $stderrPath = $null
 $stopRequested = $false
 
 try {
+    if ($runSettings.KeepLogsDays -gt 0) {
+        # Best effort: only finished turns older than the user's keep_logs_days are removed.
+        try {
+            $null = Remove-ClaudeCXOldRuns -Roots @([pscustomobject]@{ Id = 'local'; Path = $stateRootFull }) -Days $runSettings.KeepLogsDays
+        }
+        catch { }
+    }
     $statusBefore = Invoke-GitText -Repository $repoRoot -Arguments @('status', '--porcelain=v1', '--untracked-files=all')
 
     if ($ResumeSessionId) {
@@ -293,11 +326,22 @@ try {
     $repoName = Split-Path -Leaf $repoRoot
     $runKind = if ($ResumeSessionId) { 'resumed session' } else { 'new session' }
     Write-ClaudeCXProgress -Sink $progress -Message "Preparing Claude run for $repoName ($runKind)"
+    Write-ClaudeCXProgress -Sink $progress -Message "Limits: $MaxBudgetUsd USD, $MaxTurns turns, $([Math]::Round($TimeoutSeconds / 60)) minutes; model $($runSettings.Model)"
+    foreach ($note in $runSettings.Notes) {
+        Write-ClaudeCXProgress -Sink $progress -Message "Settings: $note"
+    }
     $stopPollMs = 250
+    # Run facts for the dashboard and the control center's history. Never includes a token.
+    $metadataPath = Write-ClaudeCXDashboardMetadata -TurnDirectory $turnDir -Repository $repoRoot -SessionId $sessionId `
+        -Resumed ([bool]$ResumeSessionId) -BridgeProcessId $PID -TimeoutSeconds $TimeoutSeconds -MaxTurns $MaxTurns -MaxBudgetUsd $MaxBudgetUsd `
+        -Model $runSettings.Model -ProtectedPaths $runSettings.ProtectedPaths -SettingsNotes $runSettings.Notes
     # Observability fallback only (Dashboard -> Window -> Console): Claude's flags, permissions, and limits are unchanged.
     $progressMode = Start-ClaudeCXProgressDisplay -Sink $progress -Mode $progressMode -StartDashboard {
-        $metadataPath = Write-ClaudeCXDashboardMetadata -TurnDirectory $turnDir -Repository $repoRoot -SessionId $sessionId `
-            -Resumed ([bool]$ResumeSessionId) -BridgeProcessId $PID -TimeoutSeconds $TimeoutSeconds -MaxTurns $MaxTurns -MaxBudgetUsd $MaxBudgetUsd
+        if ($null -ne (Get-ClaudeCXControlCenter)) {
+            # The always-on control center finds this run on its own; no per-run server is needed.
+            Write-ClaudeCXProgress -Sink $progress -Message 'Dashboard: showing this run in the ClaudeCX control center'
+            return
+        }
         Start-ClaudeCXDashboard -MetadataPath $metadataPath -ServerScriptPath (Join-Path $PSScriptRoot 'show-dashboard.ps1') `
             -MaxLifetimeSeconds ([Math]::Min(172800, $TimeoutSeconds + 1800))
     } -StartWindow {
@@ -351,6 +395,10 @@ try {
     $arguments.Add('--strict-mcp-config')
     $arguments.Add('--mcp-config')
     $arguments.Add($mcpPath)
+    if ($runSettings.Model -ne 'default') {
+        $arguments.Add('--model')
+        $arguments.Add($runSettings.Model)
+    }
     if ($ResumeSessionId) {
         $arguments.Add('--resume')
         $arguments.Add($sessionId)
@@ -475,6 +523,15 @@ try {
     $newState = Get-GitStateFingerprint -Repository $repoRoot
     Write-Utf8File -Path (Join-Path $sessionDir 'last-state.sha256') -Content $newState
     Write-Utf8File -Path (Join-Path $turnDir 'status-after.txt') -Content (Invoke-GitText -Repository $repoRoot -Arguments @('status', '--porcelain=v1', '--untracked-files=all'))
+
+    # Protected paths fail the run. The state above is already recorded, so Codex can resume the
+    # session and ask Claude to undo the change.
+    $protectedHits = @(Find-ClaudeCXProtectedChanges -ChangedPaths @(Get-ClaudeCXChangedPaths -Repository $repoRoot) -Patterns $runSettings.ProtectedPaths)
+    if ($protectedHits.Count -gt 0) {
+        $shown = @($protectedHits | Select-Object -First 10) -join ', '
+        throw "Claude changed protected paths: $shown. The edits remain in the working tree for review; resume this session to have Claude undo them, or revert them yourself."
+    }
+    Save-ClaudeCXRunChanges -Repository $repoRoot -TurnDirectory $turnDir
     Complete-ClaudeCXProgress -Sink $progress -Status 'success' -Message 'Structured report saved.'
 
     [ordered]@{
@@ -506,6 +563,9 @@ catch {
         catch { }
     }
     $failureStatus = if ($stopRequested) { 'stopped' } else { 'failed' }
+    if ($null -ne $turnDir) {
+        Save-ClaudeCXRunChanges -Repository $repoRoot -TurnDirectory $turnDir
+    }
     if ($null -ne $progress) {
         Complete-ClaudeCXProgress -Sink $progress -Status $failureStatus -Message $message
     }

@@ -49,6 +49,11 @@ function Get-RealStateFingerprint {
         $paths.Add((Join-Path $env:USERPROFILE '.codex\skills\claudecx'))
         $paths.Add((Join-Path $env:USERPROFILE '.codex\claudecx-backups'))
         $paths.Add((Join-Path $env:USERPROFILE '.claude\settings.json'))
+        $paths.Add((Join-Path $env:USERPROFILE '.claudecx'))
+    }
+    if ($env:APPDATA) {
+        $paths.Add((Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\ClaudeCX.lnk'))
+        $paths.Add((Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup\ClaudeCX control center.lnk'))
     }
     if ($env:CODEX_HOME) {
         $paths.Add((Join-Path $env:CODEX_HOME 'skills\claudecx'))
@@ -83,13 +88,15 @@ function Invoke-Script {
         [string]$CodexHomeEnv
     )
 
-    $names = @('USERPROFILE', 'LOCALAPPDATA', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME')
+    $names = @('USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CLAUDECX_HOME')
     $saved = @{}
     foreach ($name in $names) { $saved[$name] = [Environment]::GetEnvironmentVariable($name) }
     try {
         [IO.Directory]::CreateDirectory($ProfileRoot) | Out-Null
         [Environment]::SetEnvironmentVariable('USERPROFILE', $ProfileRoot)
         [Environment]::SetEnvironmentVariable('LOCALAPPDATA', (Join-Path $ProfileRoot 'AppData\Local'))
+        [Environment]::SetEnvironmentVariable('APPDATA', (Join-Path $ProfileRoot 'AppData\Roaming'))
+        [Environment]::SetEnvironmentVariable('CLAUDECX_HOME', $null)
         [Environment]::SetEnvironmentVariable('CLAUDE_CONFIG_DIR', (Join-Path $ProfileRoot '.claude'))
         [Environment]::SetEnvironmentVariable('CODEX_HOME', $(if ($CodexHomeEnv) { $CodexHomeEnv } else { $null }))
         # The installer's setup checks would call the real claude; they have their own tests in test-doctor.ps1.
@@ -155,6 +162,18 @@ try {
     $installerText = [IO.File]::ReadAllText((Join-Path (Get-ClaudeCXRepositoryRoot) 'install.ps1')) + [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'ClaudeCX.Common.psm1'))
     Assert-True ($installerText -notmatch '(?i)\b(npm|npx|node\.exe|vite)\b') 'installation never invokes Node, npm, or Vite'
     Assert-True ($result.Text.Contains('$claudecx')) 'install prints the $claudecx next step'
+    $startMenu = Join-Path $case.ProfileRoot 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs'
+    $shortcutFile = Join-Path $startMenu 'ClaudeCX.lnk'
+    Assert-True (Test-Path -LiteralPath $shortcutFile -PathType Leaf) 'install adds a ClaudeCX Start menu shortcut in the sandboxed profile'
+    if (Test-Path -LiteralPath $shortcutFile -PathType Leaf) {
+        $shell = New-Object -ComObject WScript.Shell
+        $link = $shell.CreateShortcut($shortcutFile)
+        Assert-True ($link.Arguments.Contains((Join-Path $destination 'scripts\start-control-center.ps1')) -and $link.Arguments.Contains('-File') -and -not $link.Arguments.Contains('-NoBrowser')) "Start menu shortcut runs the installed launcher ($($link.Arguments))"
+        Assert-True ([IO.Path]::GetFileNameWithoutExtension($link.TargetPath) -eq 'pwsh') 'Start menu shortcut runs pwsh'
+        [void][Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
+    }
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $startMenu 'Startup\ClaudeCX control center.lnk'))) 'no sign-in shortcut without -StartAtLogin'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $case.ProfileRoot '.claudecx'))) 'install creates no ClaudeCX settings file'
     Assert-True (((Get-ClaudeCXTreeManifest -Root $other) -join "`n") -ceq $otherBefore) 'unrelated skill preserved'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $case.ProfileRoot '.claude'))) 'no Claude settings created without -DisableClaudeAttribution'
     Assert-True (@(Get-ChildItem -LiteralPath $case.CodexHome -Force -Filter '.claudecx-staging-*').Count -eq 0) 'staging directory cleaned up'
@@ -303,6 +322,7 @@ try {
     Assert-True (Test-Path -LiteralPath (Join-Path $other 'SKILL.md')) 'unrelated skill preserved by uninstall'
     Assert-True (Test-Path -LiteralPath $handoffLog) 'handoff logs preserved by uninstall'
     Assert-True ([IO.File]::ReadAllText($claudeSettings) -ceq '{"model":"opus"}') 'Claude settings untouched by uninstall'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $case.ProfileRoot 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\ClaudeCX.lnk'))) 'uninstall removes the Start menu shortcut'
 
     $result = Invoke-Script -ScriptPath $uninstallScript -Arguments @('-CodexHome', $case.CodexHome, '-Yes') -ProfileRoot $case.ProfileRoot
     Assert-True ($result.ExitCode -eq 0) 'uninstall when not installed exits 0'
@@ -314,6 +334,27 @@ try {
     Assert-True ($result.ExitCode -eq 0) 'permanent uninstall exits 0'
     Assert-True (-not (Test-Path -LiteralPath $destination)) 'skill permanently removed'
     Assert-True (@(Get-BackupDirectories -CodexHome $case.CodexHome -Prefix 'uninstalled').Count -eq 1) 'permanent uninstall creates no backup'
+
+    # --- Sign-in shortcut, and no shortcuts at all ---
+    $case = New-Case 'start-at-login'
+    $result = Invoke-Script -ScriptPath $installScript -Arguments @('-CodexHome', $case.CodexHome, '-StartAtLogin') -ProfileRoot $case.ProfileRoot
+    Assert-True ($result.ExitCode -eq 0) "install -StartAtLogin exits 0 ($($result.Text))"
+    $startupShortcut = Join-Path $case.ProfileRoot 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\ClaudeCX control center.lnk'
+    Assert-True (Test-Path -LiteralPath $startupShortcut -PathType Leaf) '-StartAtLogin adds a sign-in shortcut'
+    if (Test-Path -LiteralPath $startupShortcut -PathType Leaf) {
+        $shell = New-Object -ComObject WScript.Shell
+        Assert-True ($shell.CreateShortcut($startupShortcut).Arguments.Contains('-NoBrowser')) 'sign-in shortcut starts the control center without a browser'
+        [void][Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
+    }
+    $result = Invoke-Script -ScriptPath $uninstallScript -Arguments @('-CodexHome', $case.CodexHome, '-Yes', '-Permanent') -ProfileRoot $case.ProfileRoot
+    Assert-True ($result.ExitCode -eq 0 -and -not (Test-Path -LiteralPath $startupShortcut)) 'uninstall removes the sign-in shortcut'
+
+    $case = New-Case 'no-shortcut'
+    $result = Invoke-Script -ScriptPath $installScript -Arguments @('-CodexHome', $case.CodexHome, '-NoShortcut') -ProfileRoot $case.ProfileRoot
+    Assert-True ($result.ExitCode -eq 0) 'install -NoShortcut exits 0'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $case.ProfileRoot 'AppData\Roaming\Microsoft'))) '-NoShortcut creates no shortcut'
+    $result = Invoke-Script -ScriptPath $installScript -Arguments @('-CodexHome', $case.CodexHome, '-Force', '-NoShortcut', '-StartAtLogin') -ProfileRoot $case.ProfileRoot
+    Assert-True ($result.ExitCode -ne 0) '-NoShortcut with -StartAtLogin is rejected'
 
     # --- Uninstall refuses a directory that is not ClaudeCX ---
     $case = New-Case 'uninstall-foreign'

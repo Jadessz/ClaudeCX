@@ -9,7 +9,7 @@ import { briefStructure, formatBytes, formatClock, parseActivity, textStats } fr
 
 const DIFF_COLOR_LINE_LIMIT = 20000;
 
-function EmptyState({ icon: Icon = Info, title, children, tone }) {
+export function EmptyState({ icon: Icon = Info, title, children, tone }) {
   return (
     <div className="empty" data-tone={tone}>
       <Icon aria-hidden="true" size={18} />
@@ -210,7 +210,9 @@ export function ChangesView({ changes }) {
   const data = changes.data;
   return (
     <div className="changes">
-      <p className="hint">Current <code>git status --short</code> and <code>git diff HEAD</code> of the repository, shown as plain text and refreshed every 5 seconds while this tab is open.</p>
+      {data && data.snapshot
+        ? <p className="hint"><code>git status --short</code> and <code>git diff HEAD</code> as saved when this run ended, shown as plain text. The repository may have changed since.</p>
+        : <p className="hint">Current <code>git status --short</code> and <code>git diff HEAD</code> of the repository, shown as plain text and refreshed every 5 seconds while this tab is open.</p>}
       {changes.status === 'error' && <div className="banner" data-tone="warning" role="alert"><CircleAlert aria-hidden="true" size={18} /><p>{changes.error}</p></div>}
       {data && data.errors && data.errors.length > 0 && (
         <div className="banner" data-tone="warning" role="alert"><CircleAlert aria-hidden="true" size={18} /><p>{data.errors.join(' ')}</p></div>

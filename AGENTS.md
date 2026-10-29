@@ -18,7 +18,7 @@ Do not modify the repository while setting it up.
 
 ### Layout
 
-- `skill/claudecx/`: the skill and bridge (source of truth). `scripts/invoke-claude.ps1` is the bridge.
+- `skill/claudecx/`: the skill and bridge (source of truth). `scripts/invoke-claude.ps1` is the bridge. `scripts/ClaudeCX.Settings.psm1` holds user settings and `.claudecx.json` handling; `scripts/ClaudeCX.ControlCenter.psm1` and `show-control-center.ps1` are the always-on control center.
 - `install.ps1`, `uninstall.ps1`: install to and remove from `<CodexHome>\skills\claudecx`. `doctor.ps1`: read-only setup checks.
 - `scripts/ClaudeCX.Common.psm1`: shared helpers. `scripts/test-*.ps1`: validation.
 - `dashboard-src/`: React source of the dashboard; the built files in `skill/claudecx/dashboard/` are checked in.
@@ -27,7 +27,7 @@ Do not modify the repository while setting it up.
 ### Rules
 
 - Keep the one-writer contract. Never edit the repository while a Claude bridge run is active. New bridge runs require a clean tree, including untracked files.
-- Do not weaken bridge invariants: `--safe-mode`, the role prompt on initial and resumed calls, bridge-only settings, strict empty MCP config, auto-memory and background tasks off, structured output, a preassigned UUID, turn, budget, and timeout limits, resume repository, `HEAD`, and fingerprint checks, and fail-closed handling of exit code, `is_error`, and `subtype`.
+- Do not weaken bridge invariants: `--safe-mode`, the role prompt on initial and resumed calls, bridge-only settings, strict empty MCP config, auto-memory and background tasks off, structured output, a preassigned UUID, turn, budget, and timeout limits, resume repository, `HEAD`, and fingerprint checks, and fail-closed handling of exit code, `is_error`, and `subtype`. User settings tune limits and display only: never add a setting that turns a safety switch off, keep the user's limits as the ceiling, and keep `.claudecx.json` read from `HEAD` and tighten-only.
 - The skill name stays lowercase `claudecx`. `agents/openai.yaml` keeps `allow_implicit_invocation: false` and a default prompt mentioning `$claudecx`.
 - Use structured PowerShell. Never build shell command strings and never use `Invoke-Expression`. Keep JSON strict. Use UTF-8 without BOM and LF line endings.
 - Do not commit user-specific paths, emails, session IDs, or secrets.

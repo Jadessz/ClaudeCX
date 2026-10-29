@@ -255,7 +255,7 @@ try {
     $metadataText = [IO.File]::ReadAllText($turn.Metadata, $utf8)
     Assert-True ($null -ne ($metadataText | ConvertFrom-Json)) 'dashboard metadata is JSON'
     $metadataKeys = @(($metadataText | ConvertFrom-Json).PSObject.Properties.Name | Sort-Object)
-    Assert-True (($metadataKeys -join ',') -ceq 'bridge_pid,bridge_started_at,max_budget_usd,max_turns,repository,repository_name,resumed,run_directory,session_id,started_at,timeout_seconds') "metadata holds only non-secret fields ($($metadataKeys -join ','))"
+    Assert-True (($metadataKeys -join ',') -ceq 'bridge_pid,bridge_started_at,max_budget_usd,max_turns,model,protected_paths,repository,repository_name,resumed,run_directory,session_id,settings_notes,started_at,timeout_seconds') "metadata holds only non-secret fields ($($metadataKeys -join ','))"
 
     # --- Server startup on loopback ---
     Write-Host '[server]'
@@ -552,13 +552,24 @@ try {
         [IO.File]::WriteAllBytes($invalidUtf8, [byte[]](0x61, 0xC3, 0x28, 0x0A))
         $unbornRepo = Join-Path $sandbox 'repo-unborn'
         & git init -q $unbornRepo
+        # Bridge runs read settings only from sandboxed ClaudeCX homes, never the real one.
+        $claudecxHome = Join-Path $sandbox 'claudecx-home'
+        $badHome = Join-Path $sandbox 'claudecx-home-bad'
+        [IO.Directory]::CreateDirectory($badHome) | Out-Null
+        [IO.File]::WriteAllText((Join-Path $badHome 'settings.json'), '{"max_turns": 9999}', $utf8)
+        $badProjectRepo = New-TestRepository 'repo-bad-project'
+        [IO.File]::WriteAllText((Join-Path $badProjectRepo '.claudecx.json'), '{"max_budget_usd": "lots"}', $utf8)
+        Invoke-Git -Repository $badProjectRepo -Arguments @('add', '--', '.claudecx.json')
+        Invoke-Git -Repository $badProjectRepo -Arguments @('commit', '-q', '-m', 'project limits')
         $inputCases = @(
             @{ Name = 'repository without commits'; Brief = $goodBrief; Original = $null; Repo = $unbornRepo; Expect = 'has no commits yet' },
             @{ Name = 'inside-repository brief'; Brief = $insideFile; Original = $null; Expect = 'BriefPath must be outside the repository' },
             @{ Name = 'inside-repository original prompt'; Brief = $goodBrief; Original = $insideFile; Expect = 'OriginalPromptPath must be outside the repository' },
             @{ Name = 'oversized brief'; Brief = $oversized; Original = $null; Expect = 'BriefPath exceeds the 1048576-byte limit' },
             @{ Name = 'missing original prompt'; Brief = $goodBrief; Original = (Join-Path $sandbox 'missing-original.md'); Expect = 'OriginalPromptPath is not a file' },
-            @{ Name = 'invalid UTF-8 original prompt'; Brief = $goodBrief; Original = $invalidUtf8; Expect = 'OriginalPromptPath is not valid UTF-8' }
+            @{ Name = 'invalid UTF-8 original prompt'; Brief = $goodBrief; Original = $invalidUtf8; Expect = 'OriginalPromptPath is not valid UTF-8' },
+            @{ Name = 'invalid user settings'; Brief = $goodBrief; Original = $null; Home = $badHome; Expect = 'Turns per run must be between 1 and 500' },
+            @{ Name = 'invalid project settings'; Brief = $goodBrief; Original = $null; Repo = $badProjectRepo; Expect = "This repository's .claudecx.json has problems" }
         )
         foreach ($case in $inputCases) {
             $caseState = Join-Path $sandbox ('input-state-' + [Guid]::NewGuid().ToString('N'))
@@ -576,6 +587,7 @@ try {
             $caseInfo.Environment['PATH'] = $searchPath
             $caseInfo.Environment.Remove('AGENT_HANDOFF_DEPTH') | Out-Null
             $caseInfo.Environment['LOCALAPPDATA'] = Join-Path $sandbox 'bridge-localappdata'
+            $caseInfo.Environment['CLAUDECX_HOME'] = $(if ($case.ContainsKey('Home')) { $case.Home } else { $claudecxHome })
             $caseProcess = [Diagnostics.Process]::Start($caseInfo)
             $script:cleanup.Add($caseProcess)
             $caseErr = $caseProcess.StandardError.ReadToEndAsync()
@@ -606,6 +618,7 @@ try {
         $startInfo.Environment['PATH'] = $searchPath
         $startInfo.Environment.Remove('AGENT_HANDOFF_DEPTH') | Out-Null
         $startInfo.Environment['LOCALAPPDATA'] = Join-Path $sandbox 'bridge-localappdata'
+        $startInfo.Environment['CLAUDECX_HOME'] = $claudecxHome
         $bridge = [Diagnostics.Process]::Start($startInfo)
         $script:cleanup.Add($bridge)
         $bridgeOut = $bridge.StandardOutput.ReadToEndAsync()
@@ -651,10 +664,80 @@ try {
                 Assert-True (Wait-Until { $null -eq (Get-Process -Id $fakePid -ErrorAction SilentlyContinue) } -TimeoutSeconds 10) 'the fake Claude process tree was terminated'
                 Assert-True (-not $bystander.HasExited) 'an unrelated process was not terminated'
                 Assert-True (@(Get-ChildItem -LiteralPath $stateRoot -Recurse -File -Filter 'active.lock').Count -eq 0) 'bridge lock released after the stop'
+                $saved = [IO.File]::ReadAllText((Join-Path $script:bridgeTurn 'changes.json')) | ConvertFrom-Json
+                Assert-True ($saved.status_text.Contains('partial-edit.txt')) 'a stopped run saves its final changes for history'
+                $metadata = [IO.File]::ReadAllText((Join-Path $script:bridgeTurn 'dashboard.json')) | ConvertFrom-Json
+                Assert-True ($metadata.max_turns -eq 3 -and $metadata.max_budget_usd -eq 0.01) 'run metadata is written in every progress mode, with the lowered limits'
             }
+        }
+
+        # --- Settings and protected paths, with a fake Claude that finishes ---
+        Write-Host '[bridge settings]'
+        $okBin = Join-Path $sandbox 'fake-bin-ok'
+        [IO.Directory]::CreateDirectory($okBin) | Out-Null
+        $okCmd = @(
+            '@echo off',
+            'echo {"type":"system","subtype":"init","model":"fake-model"}',
+            'echo changed> "%FAKE_EDIT_PATH%"',
+            'echo {"type":"result","subtype":"success","is_error":false,"num_turns":1,"duration_ms":5,"total_cost_usd":0.01,"structured_output":{"summary":"done","files_changed":[],"commands_run":[],"denied_actions":[],"open_questions":[],"deviations_from_brief":[],"risks":[],"checks":[]}}'
+        ) -join "`r`n"
+        [IO.File]::WriteAllText((Join-Path $okBin 'claude.cmd'), $okCmd + "`r`n", $utf8)
+        $okPath = @($okBin, $gitDir, $pwshDir, $systemDir) -join [IO.Path]::PathSeparator
+        $settingsHome = Join-Path $sandbox 'claudecx-home-settings'
+        [IO.Directory]::CreateDirectory($settingsHome) | Out-Null
+        [IO.File]::WriteAllText((Join-Path $settingsHome 'settings.json'), '{"max_budget_usd": 2, "max_turns": 7, "protected_paths": ["*.secret"]}', $utf8)
+
+        function Invoke-FakeBridge {
+            param([string]$Repository, [string]$EditPath, [string]$State)
+            $info = [Diagnostics.ProcessStartInfo]::new()
+            $info.FileName = $pwshPath
+            $info.UseShellExecute = $false
+            $info.CreateNoWindow = $true
+            $info.RedirectStandardOutput = $true
+            $info.RedirectStandardError = $true
+            foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', $bridgeScript, '-ProjectPath', $Repository, '-BriefPath', $goodBrief,
+                    '-StateRoot', $State, '-ProgressMode', 'None', '-TimeoutSeconds', '60', '-MaxBudgetUsd', '9')) {
+                $info.ArgumentList.Add($argument)
+            }
+            $info.Environment['PATH'] = $okPath
+            $info.Environment.Remove('AGENT_HANDOFF_DEPTH') | Out-Null
+            $info.Environment['LOCALAPPDATA'] = Join-Path $sandbox 'bridge-localappdata'
+            $info.Environment['CLAUDECX_HOME'] = $settingsHome
+            $info.Environment['FAKE_EDIT_PATH'] = $EditPath
+            $process = [Diagnostics.Process]::Start($info)
+            $script:cleanup.Add($process)
+            $err = $process.StandardError.ReadToEndAsync()
+            $out = $process.StandardOutput.ReadToEnd()
+            $null = $process.WaitForExit(60000)
+            $turn = @(Get-ChildItem -LiteralPath $State -Recurse -File -Filter 'dashboard.json' -ErrorAction SilentlyContinue | Select-Object -First 1)
+            return [pscustomobject]@{ ExitCode = $process.ExitCode; Out = $out; Err = $err.Result; Turn = $(if ($turn.Count) { $turn[0].DirectoryName } else { $null }) }
+        }
+
+        $okRepo = New-TestRepository 'repo-settings-ok'
+        $okRun = Invoke-FakeBridge -Repository $okRepo -EditPath (Join-Path $okRepo 'notes.txt') -State (Join-Path $sandbox 'state-settings-ok')
+        Assert-True ($okRun.ExitCode -eq 0 -and $okRun.Out.Contains('"status":"success"')) "a run that edits an unprotected file succeeds ($($okRun.Err.Trim()))"
+        if ($okRun.Turn) {
+            $okMeta = [IO.File]::ReadAllText((Join-Path $okRun.Turn 'dashboard.json')) | ConvertFrom-Json
+            Assert-True ($okMeta.max_budget_usd -eq 2 -and $okMeta.max_turns -eq 7) "the user's settings cap the limits Codex asked for ($($okMeta.max_budget_usd) USD, $($okMeta.max_turns) turns)"
+            Assert-True (@($okMeta.protected_paths) -contains '*.secret' -and @($okMeta.protected_paths) -contains '.claudecx.json') 'run metadata lists the protected paths'
+            $okLog = Read-Shared (Join-Path $okRun.Turn 'progress.log')
+            Assert-True ($okLog.Contains('Limits: 2 USD, 7 turns') -and $okLog.Contains('the limit of 2 USD applies')) 'progress log explains the capped limits'
+            Assert-True ((Get-Content -Raw -LiteralPath (Join-Path $okRun.Turn 'changes.json') | ConvertFrom-Json).status_text.Contains('notes.txt')) 'a finished run saves its final changes'
+        }
+
+        $lockedRepo = New-TestRepository 'repo-settings-protected'
+        $lockedRun = Invoke-FakeBridge -Repository $lockedRepo -EditPath (Join-Path $lockedRepo 'api.secret') -State (Join-Path $sandbox 'state-settings-protected')
+        Assert-True ($lockedRun.ExitCode -ne 0 -and $lockedRun.Err.Contains('Claude changed protected paths: api.secret')) "a run that edits a protected path fails ($($lockedRun.Err.Trim()))"
+        if ($lockedRun.Turn) {
+            $lockedFailure = [IO.File]::ReadAllText((Join-Path $lockedRun.Turn 'failure.json')) | ConvertFrom-Json
+            Assert-True ($lockedFailure.status -ceq 'failed' -and $lockedFailure.message.Contains('resume this session')) 'failure.json explains how to undo the protected change'
+            $lockedSession = Split-Path -Parent $lockedRun.Turn
+            Assert-True ([IO.File]::ReadAllText((Join-Path $lockedSession 'last-state.sha256')).Trim().Length -eq 64) 'the protected-path failure keeps the session resumable'
+            Assert-True (Test-Path -LiteralPath (Join-Path $lockedRepo 'api.secret')) 'the protected edit is left in place for review'
         }
     }
 }
+
 finally {
     foreach ($process in $script:cleanup) {
         try { if (-not $process.HasExited) { $process.Kill($true) } } catch { }

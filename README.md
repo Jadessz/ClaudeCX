@@ -48,7 +48,7 @@ You start it on purpose by typing `$claudecx` in a Codex chat. Codex never uses 
 4. [Writing good requests](#4-writing-good-requests)
 5. [The live dashboard](#5-the-live-dashboard)
 6. [What happens during a run](#6-what-happens-during-a-run)
-7. [Limits and options](#7-limits-and-options)
+7. [Settings and limits](#7-settings-and-limits)
 8. [Follow-ups and resuming a session](#8-follow-ups-and-resuming-a-session)
 9. [Logs and where to find them](#9-logs-and-where-to-find-them)
 10. [What is protected, and what is not](#10-what-is-protected-and-what-is-not)
@@ -161,8 +161,9 @@ The installer:
 2. copies them to `<CodexHome>\skills\claudecx`;
 3. checks that the copy matches the original exactly;
 4. unblocks the installed copy, so Codex can run it even if you downloaded a ZIP;
-5. prints the next step;
-6. runs the setup check ([Step 8](#step-8-check-your-setup)) and lists anything still missing, with how to fix it.
+5. adds **ClaudeCX** to the Start menu, which opens the [control center](#the-control-center) (add `-NoShortcut` to skip this, or `-StartAtLogin` to also start the control center quietly when you sign in to Windows);
+6. prints the next step;
+7. runs the setup check ([Step 8](#step-8-check-your-setup)) and lists anything still missing, with how to fix it.
 
 `<CodexHome>` is, in this order: the `-CodexHome` value if you pass one, otherwise the `CODEX_HOME` environment variable, otherwise `%USERPROFILE%\.codex`. Most people never set either, so the skill lands in `%USERPROFILE%\.codex\skills\claudecx`.
 
@@ -265,7 +266,28 @@ One task per request works best. Split large features into several runs.
 
 ## 5. The live dashboard
 
-While Claude works, the bridge opens a local **Dashboard** in your default browser at `http://127.0.0.1:<random port>/`. This is the default (`-ProgressMode Dashboard`). It is a small page served by a separate PowerShell process on your own computer. It has no build step, loads nothing from the internet, and makes no network calls beyond your own machine.
+### The control center
+
+Open **ClaudeCX** from the Start menu to get the **control center**: one local page that stays open between runs. It has four tabs:
+
+- **Live:** the run in progress, with everything described below and the **Stop run** button. With no run going it says so and shows your last run. When a run starts, the page switches to it by itself, and if the page is not open, ClaudeCX opens it for you (you can turn that off in Settings).
+- **History:** every run on this computer, newest first, with its request, project, status, duration, and cost, and a filter box. Open any run to see its prompt journey, work log, report, and the changes it made (saved when the run ended, so later edits to your project do not get in the way). It finds runs from the Codex desktop app's hidden log folder too.
+- **Settings:** your budget, turn, and time limits, the Claude model, the live view, protected paths, and log clean-up. See [Settings and limits](#7-settings-and-limits).
+- **Health:** checks Git, Claude Code, your Claude sign-in, your settings file, and the installed skill, with a fix for anything wrong; shows how much space run logs use in each folder; and can delete old finished runs.
+
+The control center runs quietly in the background (a hidden PowerShell process) until you stop it from the Health tab or sign out. While it runs, new runs appear in it instead of opening a separate dashboard. You can also start, check, or stop it from a terminal:
+
+```powershell
+pwsh -NoProfile -File "$env:USERPROFILE\.codex\skills\claudecx\scripts\start-control-center.ps1"          # start it and open the page
+pwsh -NoProfile -File "$env:USERPROFILE\.codex\skills\claudecx\scripts\start-control-center.ps1" -Status  # is it running?
+pwsh -NoProfile -File "$env:USERPROFILE\.codex\skills\claudecx\scripts\start-control-center.ps1" -Stop
+```
+
+Like the per-run dashboard, it listens on `127.0.0.1` only and needs a random access key. The key stays in `%USERPROFILE%\.claudecx\control-center.token` while it runs, so the Start menu shortcut can reopen the page. If you reload the page, open ClaudeCX from the Start menu again.
+
+### The per-run dashboard
+
+When the control center is not running, the bridge opens a local **Dashboard** for the run in your default browser at `http://127.0.0.1:<random port>/`. This is the default (`-ProgressMode Dashboard`). It is a small page served by a separate PowerShell process on your own computer. It has no build step, loads nothing from the internet, and makes no network calls beyond your own machine.
 
 <table>
   <tr>
@@ -284,6 +306,7 @@ While Claude works, the bridge opens a local **Dashboard** in your default brows
 
 - **Command bar** (stays at the top): the repository name, the run status (*Running*, *Succeeded*, *Failed*, *Stopped*), elapsed time, whether the page is connected, and the Refresh, Copy session, and Stop run buttons.
 - **Current state:** one headline for what is happening now, the latest activity or final outcome, and a single row of facts: session, start time, turns, cost, and duration against their limits.
+- **Run settings** (when they matter): the model, the protected paths, and a note when a limit was lowered, for example because Codex asked for less or the project's `.claudecx.json` sets a smaller budget.
 - **Collaboration flow:** *Your request → Codex handoff → Claude implementation → Codex review*. Codex review is always shown as next, never as done, because it happens after the run.
 - **Prompt journey tab** (the default): your original request to Codex and the exact brief Codex sent Claude, side by side as plain text, each with its own Copy button, plus a short outline of the structure Codex added (objective, scope, constraints, acceptance criteria, tests, risks, docs) detected from the brief's Markdown headings. The outline is a literal heading match, not an AI comparison. If Codex did not pass `-OriginalPromptPath` (older or manual calls), the page says the original request was not captured; everything else works.
 - **Work tab:** what Claude is doing, one short line per step, shown as a timeline that follows the latest step (scroll up to pause following), for example `Tool Edit: src\routes\signup.ts` or `Tool Bash: running command`. This is the text of `progress.log`. It never shows prompts, file contents, command arguments, search text, or URLs.
@@ -345,42 +368,96 @@ This is what the bridge (`invoke-claude.ps1`) does each time Codex calls it:
 2. **Finds the repository** root and its current `HEAD` commit.
 3. **Locks the repository** with `active.lock`, so only one run per repository can happen at a time. A lock left by a process that no longer exists is cleared automatically.
 4. **Checks the working tree.** A new run needs a completely clean tree. A resumed run needs the tree to be exactly as Claude left it (see [Follow-ups](#8-follow-ups-and-resuming-a-session)).
-5. **Creates a session** with a new ID and records the starting state.
-6. **Saves the brief and the Git status** in a new run folder and opens the dashboard (or another progress display).
-7. **Starts Claude Code** with fixed settings:
+5. **Applies your settings.** It reads your settings and the project's committed `.claudecx.json`, and refuses to start if either has a problem. Codex and the project can only lower your limits.
+6. **Creates a session** with a new ID and records the starting state.
+7. **Saves the brief and the Git status** in a new run folder and shows the run in the control center or a dashboard (or another progress display).
+8. **Starts Claude Code** with fixed settings:
    - `--safe-mode`: your project's and your own Claude customizations (`CLAUDE.md`, hooks, plugins, skills, MCP servers, agents, auto-memory) are not loaded;
    - `--permission-mode auto`: Claude's own safety check reviews each action;
    - a bridge-only settings file that blocks commits, pushes, tags, publishing, deployment, cloud commands, `curl`/`wget`, calls to Codex or Claude, MCP tools, and reading `.env` and `secrets` files, and turns off hooks, auto-memory, and attribution;
    - a role prompt telling Claude it is the implementation worker and what it may not do;
    - an empty, strict MCP configuration;
    - a required JSON report format;
-   - the turn limit, the budget limit, and a preassigned session ID.
-8. **Sends the brief** to Claude through standard input (never on a command line).
-9. **Reads Claude's progress live**, saves every raw event to `claude-events.jsonl`, and writes the safe one-line summaries to `progress.log`. It also checks for a **Stop run** request about four times a second.
-10. **Enforces the timeout.** If time runs out, Claude and everything it started are terminated.
-11. **Checks the result and fails closed.** The run counts as failed on any of these: a non-zero exit code, an error result, a result type other than `success`, a timeout, a stop request, an unreadable progress line, a missing report, or a moved `HEAD` (which would mean something was committed).
-12. **On success,** saves `report.json`, records the new working-tree state for resumes, and prints one line of JSON for Codex with the session ID and file paths.
-13. **Always** writes `progress.done` (so the displays know the run is over) and releases the lock.
+   - the turn limit, the budget limit, the model you chose, and a preassigned session ID.
+9. **Sends the brief** to Claude through standard input (never on a command line).
+10. **Reads Claude's progress live**, saves every raw event to `claude-events.jsonl`, and writes the safe one-line summaries to `progress.log`. It also checks for a **Stop run** request about four times a second.
+11. **Enforces the timeout.** If time runs out, Claude and everything it started are terminated.
+12. **Checks the result and fails closed.** The run counts as failed on any of these: a non-zero exit code, an error result, a result type other than `success`, a timeout, a stop request, an unreadable progress line, a missing report, a moved `HEAD` (which would mean something was committed), or a change to a [protected path](#protected-paths).
+13. **On success,** saves `report.json`, records the new working-tree state for resumes, and prints one line of JSON for Codex with the session ID and file paths.
+14. **Always** saves the final status and diff to `changes.json` (for History), writes `progress.done` (so the displays know the run is over), and releases the lock.
 
 Codex then reviews the changes and runs the tests itself. Claude's report is only a hint; the real evidence is `git status`, `git diff`, and the test results.
 
-## 7. Limits and options
+## 7. Settings and limits
 
-Codex chooses these values for each run. You can ask for different ones in your request. If you run the bridge yourself, pass them as parameters.
+Your settings apply to every run. Change them in the control center's **Settings** tab, by asking Codex ("raise my ClaudeCX budget to 10 dollars", "always use Sonnet"), or from a terminal:
+
+```powershell
+pwsh -NoProfile -File "$env:USERPROFILE\.codex\skills\claudecx\scripts\claudecx-settings.ps1"                              # show them
+pwsh -NoProfile -File "$env:USERPROFILE\.codex\skills\claudecx\scripts\claudecx-settings.ps1" -Set max_budget_usd=10 -Set model=sonnet
+pwsh -NoProfile -File "$env:USERPROFILE\.codex\skills\claudecx\scripts\claudecx-settings.ps1" -ResetAll                    # back to the defaults
+```
+
+They are saved in `%USERPROFILE%\.claudecx\settings.json` (or `CLAUDECX_HOME\settings.json`) and take effect on the next run, never on one already running.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `max_budget_usd` | `5` (0.01 to 1000) | Most a single run may cost, in US dollars. |
+| `max_turns` | `60` (1 to 500) | Most turns Claude may take in one run. |
+| `timeout_minutes` | `60` (1 to 1440) | Claude is stopped after this long. |
+| `model` | `default` | `default` (whatever your Claude Code uses), `sonnet`, `opus`, or `haiku`. |
+| `progress_display` | `dashboard` | How a run is shown when the control center is not running: `dashboard`, `window`, `console`, or `none` (see [above](#other-progress-modes)). |
+| `open_center_on_new_run` | `true` | Open the control center when a run starts, if it is running but not already open. |
+| `keep_logs_days` | `0` | Delete finished run logs older than this many days when a run starts. `0` keeps them. |
+| `protected_paths` | none | Files or folders Claude must not change (see below). |
+
+The three limits are **your ceiling**. Codex can ask for less on a run (for example a small budget for a small fix), but a higher value is capped at your setting, and the dashboard says so. If a limit is reached, the run stops and counts as failed. Partial edits stay in your project for review.
+
+**Safety switches are not settings.** Safe mode, the ban on commits, pushes, and deployments, the permission mode, the clean-tree and resume checks, and the required report are always on. The Settings tab lists them as locked.
+
+### Protected paths
+
+List files or folders, one per entry, relative to the project root:
+
+| Pattern | Protects |
+| --- | --- |
+| `.github/workflows/` | that folder and everything in it |
+| `secrets` | the file or folder `secrets` at the project root |
+| `*.lock` | every file ending in `.lock`, in any folder |
+| `db/**/*.sql` | every `.sql` file anywhere under `db` |
+
+Codex lists them in the brief so Claude knows. After the run, the bridge compares them with `git status`. If Claude changed, added, deleted, or renamed a protected file, the run fails with a clear message. The edits stay in your project so you can see what happened, and Codex can resume the session to have Claude undo them. Matching ignores case, as Windows does.
+
+### Per-project limits: `.claudecx.json`
+
+A project can commit a `.claudecx.json` at its root to make runs in it stricter:
+
+```json
+{
+  "max_budget_usd": 2,
+  "max_turns": 30,
+  "timeout_minutes": 20,
+  "protected_paths": ["db/migrations/", "infra/"]
+}
+```
+
+It can only **lower** the three limits and **add** protected paths; it cannot raise a limit or choose a model, so a repository you clone cannot make ClaudeCX spend more. The bridge reads the version in your last commit, not the working copy, so Claude cannot loosen it during a run, and `.claudecx.json` itself is always protected.
+
+### Bridge parameters
+
+If you run the bridge yourself, it takes these parameters:
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
 | `-ProjectPath` | required | The Git repository Claude works in. |
 | `-BriefPath` | required | The Markdown file with the task for Claude. |
-| `-MaxTurns` | `60` (1 to 500) | Maximum number of Claude turns before the run fails. |
-| `-MaxBudgetUsd` | `5.00` (0.01 to 1000) | Maximum estimated cost in US dollars for this run. |
-| `-TimeoutSeconds` | `3600` (30 to 86400) | Maximum run time. Claude is terminated when it runs out. |
+| `-MaxTurns` | your `max_turns` (1 to 500) | Lower the turn limit for this run. |
+| `-MaxBudgetUsd` | your `max_budget_usd` (0.01 to 1000) | Lower the budget for this run. |
+| `-TimeoutSeconds` | your `timeout_minutes` (30 to 86400) | Lower the time limit for this run. |
 | `-PermissionMode` | `auto` | `auto` lets Claude edit with its safety check. `plan` is read-only: Claude can look but not change anything. No other mode is allowed. |
-| `-ProgressMode` | `Dashboard` | `Dashboard`, `Window`, `Console`, or `None` (see [above](#other-progress-modes)). |
+| `-ProgressMode` | your `progress_display` | `Dashboard`, `Window`, `Console`, or `None` (see [above](#other-progress-modes)). |
 | `-ResumeSessionId` | none | Continue an earlier session instead of starting a new one. |
 | `-StateRoot` | `%LOCALAPPDATA%\CodexClaude\handoffs` | Where run logs are kept. |
-
-If a limit is reached, the run stops and counts as failed. Partial edits stay in your project for review.
 
 ## 8. Follow-ups and resuming a session
 
@@ -419,7 +496,8 @@ Every run is logged outside your repositories:
       claude-stderr.txt            # Claude's error output
       progress.log                 # safe, human-readable progress (what the dashboard shows)
       progress.done                # completion marker: success, failed, or stopped
-      dashboard.json               # dashboard settings for this run (no access key)
+      dashboard.json               # run facts: limits, model, protected paths (no access key)
+      changes.json                 # git status and diff when the run ended (shown in History)
       dashboard-endpoint.json      # dashboard port and process ID while it runs
       stop-request.json            # present only if Stop run was confirmed
       report.json                  # Claude's structured report (success only)
@@ -428,9 +506,9 @@ Every run is logged outside your repositories:
 
 `<repo-key>` is the first 24 hexadecimal characters of the SHA-256 hash of the lowercase repository path, so each repository gets its own folder.
 
-> **Using the Codex desktop app?** It is a packaged Microsoft Store app, and Windows quietly redirects its `%LOCALAPPDATA%` writes into the app's own folder. The logs then live under `%LOCALAPPDATA%\Packages\OpenAI.Codex_<id>\LocalCache\Local\CodexClaude\handoffs\`, even though the paths the bridge prints say `%LOCALAPPDATA%\CodexClaude\handoffs`. Codex sees the printed paths. When you browse the logs yourself, look in the package folder. Runs started from the Codex CLI or from your own terminal use the normal path.
+> **Using the Codex desktop app?** It is a packaged Microsoft Store app, and Windows quietly redirects its `%LOCALAPPDATA%` writes into the app's own folder. The logs then live under `%LOCALAPPDATA%\Packages\OpenAI.Codex_<id>\LocalCache\Local\CodexClaude\handoffs\`, even though the paths the bridge prints say `%LOCALAPPDATA%\CodexClaude\handoffs`. Codex sees the printed paths. The control center's History and Health tabs read both places for you. Runs started from the Codex CLI or from your own terminal use the normal path. Your settings are kept in `%USERPROFILE%\.claudecx`, which Windows does not redirect, so the Codex app and your terminal read the same file.
 
-Logs are never deleted automatically. They are small, but they contain your briefs and Claude's output, so delete old session folders when you no longer need them. A session whose folder you delete can no longer be resumed.
+Logs are kept until you delete them, unless you set **Delete finished run logs after** in Settings: then finished runs older than that are removed whenever a new run starts. They contain your briefs and Claude's output, so clean them up from the Health tab (or delete old session folders) when you no longer need them. A session whose runs you delete can no longer be resumed.
 
 ## 10. What is protected, and what is not
 
@@ -441,9 +519,11 @@ Logs are never deleted automatically. They are small, but they contain your brie
 - Pushes, tags, pull requests, releases, publishing, deployments, cloud CLIs, `curl` and `wget`, and calls to Codex or Claude are blocked by rule.
 - `.env` files and `secrets` folders are blocked from reading.
 - Your project's Claude hooks, plugins, MCP servers, and instruction files are not loaded.
-- Every run has a turn limit, a budget limit, and a timeout.
+- Every run has a turn limit, a budget limit, and a timeout, all capped by your own settings.
+- Paths you mark as protected (and the project's `.claudecx.json`) fail the run if Claude changes them.
+- Claude's rules block it from reading or editing your ClaudeCX settings folder.
 - Only one run per repository at a time.
-- The dashboard is reachable only from your own computer and only with that run's access key.
+- The dashboard and the control center are reachable only from your own computer and only with their access key.
 
 **Not protected:**
 
@@ -474,11 +554,12 @@ pwsh -NoProfile -File .\uninstall.ps1 -Yes              # move the skill to <Cod
 pwsh -NoProfile -File .\uninstall.ps1 -Yes -Permanent   # delete the skill outright
 ```
 
-Uninstall removes only `<CodexHome>\skills\claudecx`, and only if its `SKILL.md` names the `claudecx` skill. Without `-Yes` it asks for confirmation, and in a non-interactive session it refuses. It does not touch run logs, Claude settings, or other skills. To restore an uninstall backup, move the folder back to `<CodexHome>\skills\claudecx`. Both scripts accept `-CodexHome`.
+Uninstall removes only `<CodexHome>\skills\claudecx`, and only if its `SKILL.md` names the `claudecx` skill. It also stops the control center and removes its Start menu and sign-in shortcuts. Without `-Yes` it asks for confirmation, and in a non-interactive session it refuses. It does not touch run logs, your ClaudeCX settings, Claude settings, or other skills. To restore an uninstall backup, move the folder back to `<CodexHome>\skills\claudecx`. Both scripts accept `-CodexHome`.
 
 To remove everything ClaudeCX ever created, also delete:
 
 - the run logs: `%LOCALAPPDATA%\CodexClaude` (and, for the Codex desktop app, `%LOCALAPPDATA%\Packages\OpenAI.Codex_<id>\LocalCache\Local\CodexClaude`);
+- your ClaudeCX settings: `%USERPROFILE%\.claudecx`;
 - old skill backups: `<CodexHome>\claudecx-backups`;
 - if you used `-DisableClaudeAttribution`: restore `settings.json.claudecx-backup-<timestamp>` next to your Claude `settings.json` if you want the old attribution back.
 
@@ -503,7 +584,11 @@ To remove everything ClaudeCX ever created, also delete:
 | **Stop run did nothing** | Stop works only while the run is active; after the run ends it is refused. A stopped run shows *Stopped*, writes `status: stopped` in `failure.json`, and leaves partial edits in place. |
 | **No progress window appears** (in `Window` mode) | The bridge falls back to text output and prints a warning. Read `progress.log` in the run folder. Closing the window never affects the run. |
 | **Codex stopped in the middle** (for example, it hit its own usage limit) | Claude keeps running and finishes on its own. Its changes stay uncommitted in your project, and its report is in the run folder. When Codex is available again, ask it to review the changes and continue. If Claude's run succeeded and nothing was edited since, Codex can still resume that Claude session. |
-| **I can't find the logs** | If you use the Codex desktop app, they are in the app's package folder (see [Logs](#9-logs-and-where-to-find-them)). |
+| **"Your ClaudeCX settings file has problems"** | A value in `%USERPROFILE%\.claudecx\settings.json` is out of range or the file is not valid JSON, so the bridge refused to start. Fix it in the control center's Settings tab, or run `claudecx-settings.ps1 -ResetAll`. |
+| **"This repository's .claudecx.json has problems"** | The project's committed `.claudecx.json` has a bad value. Fix it, commit, and run again. The bridge reads the committed version, so uncommitted edits to it do not count. |
+| **"Claude changed protected paths"** | Claude edited a file you protected. The run is marked failed and the edits stay in your project. Ask Codex to resume the session and undo them, or revert them yourself (`git restore <path>`). |
+| **The control center page says "No access token"** | You reloaded the page or opened it by hand. Open **ClaudeCX** from the Start menu again. Runs are not affected. |
+| **I can't find the logs** | Open the control center's History tab, which lists runs from every log folder. If you use the Codex desktop app, the files are in the app's package folder (see [Logs](#9-logs-and-where-to-find-them)). |
 | **"malformed stream-json line"** | Claude Code printed something unexpected, and the bridge stopped it. Check the last line of `claude-events.jsonl` and `claude-stderr.txt`, and update Claude Code. |
 | **Hooks or MCP servers in my project** | Safe mode turns off project and user hooks, plugins, skills, agents, and MCP servers. The bridge settings also set `disableAllHooks` and block `mcp__*`, and an empty strict MCP configuration is loaded. Your project's own build and test scripts can still run code, so read them first. |
 | **The installer refuses to run** | Read its message. It refuses on an existing install without `-Force`, an invalid skill package, a Claude settings file that is not strict JSON, or a destination that is a symbolic link or junction. Nothing is changed when it refuses. |
@@ -542,17 +627,23 @@ skill/claudecx/                   the Codex skill (source of truth for the bridg
   scripts/ClaudeCX.Progress.psm1  stream-json parsing, result checks, progress sanitizing
   scripts/watch-progress.ps1      read-only progress window
   scripts/ClaudeCX.Dashboard.psm1 dashboard API, loopback HTTP handler, stop marker, display fallback
-  scripts/show-dashboard.ps1      local dashboard server (127.0.0.1 only)
+  scripts/show-dashboard.ps1      local per-run dashboard server (127.0.0.1 only)
+  scripts/ClaudeCX.Settings.psm1  user settings, .claudecx.json limits, protected paths, run discovery, pruning
+  scripts/claudecx-settings.ps1   show or change settings from a terminal or a Codex chat
+  scripts/ClaudeCX.ControlCenter.psm1  control center API: history, settings, health
+  scripts/show-control-center.ps1 always-on control center server (127.0.0.1 only)
+  scripts/start-control-center.ps1  starts, reopens, or stops the control center (the Start menu shortcut)
   dashboard/                      built dashboard page (index.html, styles.css, app.js); do not edit by hand
 dashboard-src/                    React source for the dashboard, built with Vite (contributors only)
 package.json, package-lock.json   contributor-only build tooling; installing ClaudeCX never runs npm
   scripts/test-claude-bridge.ps1  deep live smoke test
 scripts/
   ClaudeCX.Common.psm1            shared installer and validation helpers
-  test-static.ps1                 offline static checks (also runs test-progress.ps1, test-dashboard.ps1, and test-doctor.ps1)
+  test-static.ps1                 offline static checks (also runs the progress, dashboard, doctor, and control center tests)
   test-progress.ps1               offline stream-json, sanitizing, and progress-window tests
   test-dashboard.ps1              offline dashboard server, API, page-source, fallback, and stop tests
   test-doctor.ps1                 offline setup-check and installer-unblock tests against a fake Claude
+  test-control-center.ps1         offline settings, protected-path, history, pruning, and control center tests
   test-install.ps1                offline sandboxed installer tests
   test-live.ps1                   opt-in live smoke test
 docs/ARCHITECTURE.md              design, trust boundaries, and run flow

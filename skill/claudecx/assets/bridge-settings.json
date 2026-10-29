@@ -16,6 +16,8 @@
       "Read(./**/.env.*)",
       "Read(./secrets/**)",
       "Read(./**/secrets/**)",
+      "Read(~/.claudecx/**)",
+      "Edit(~/.claudecx/**)",
       "Bash(git *commit*)",
       "Bash(git *push*)",
       "Bash(git *tag*)",

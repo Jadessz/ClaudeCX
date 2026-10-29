@@ -104,6 +104,7 @@ function Get-ClaudeCXDashboardPaths {
         StatusAfter = Join-Path $root 'status-after.txt'
         OriginalPrompt = Join-Path $root 'original-prompt.md'
         CodexBrief = Join-Path $root 'codex-brief.md'
+        Changes = Join-Path $root 'changes.json'
     }
 }
 
@@ -117,7 +118,10 @@ function Write-ClaudeCXDashboardMetadata {
         [Parameter(Mandatory = $true)][int]$BridgeProcessId,
         [Parameter(Mandatory = $true)][int]$TimeoutSeconds,
         [Parameter(Mandatory = $true)][int]$MaxTurns,
-        [Parameter(Mandatory = $true)][decimal]$MaxBudgetUsd
+        [Parameter(Mandatory = $true)][decimal]$MaxBudgetUsd,
+        [string]$Model = 'default',
+        [AllowEmptyCollection()][string[]]$ProtectedPaths = @(),
+        [AllowEmptyCollection()][string[]]$SettingsNotes = @()
     )
 
     $paths = Get-ClaudeCXDashboardPaths -TurnDirectory $TurnDirectory
@@ -135,6 +139,9 @@ function Write-ClaudeCXDashboardMetadata {
         timeout_seconds = $TimeoutSeconds
         max_turns = $MaxTurns
         max_budget_usd = $MaxBudgetUsd
+        model = $Model
+        protected_paths = @($ProtectedPaths)
+        settings_notes = @($SettingsNotes)
     }
     Write-ClaudeCXAtomicFile -Path $paths.Metadata -Content ($metadata | ConvertTo-Json)
     return $paths.Metadata
@@ -345,6 +352,9 @@ function Get-ClaudeCXDashboardState {
         timeout_seconds = Get-ClaudeCXNumber -Object $Metadata -Name 'timeout_seconds'
         max_turns = Get-ClaudeCXNumber -Object $Metadata -Name 'max_turns'
         max_budget_usd = Get-ClaudeCXNumber -Object $Metadata -Name 'max_budget_usd'
+        model = ConvertTo-ClaudeCXSafeText -Text ([string]$Metadata.PSObject.Properties['model']?.Value) -MaxLength 40
+        protected_paths = @((ConvertTo-ClaudeCXStringList -Value $Metadata.PSObject.Properties['protected_paths']?.Value) | ForEach-Object { ConvertTo-ClaudeCXSafeText -Text $_ -MaxLength 200 })
+        settings_notes = @((ConvertTo-ClaudeCXStringList -Value $Metadata.PSObject.Properties['settings_notes']?.Value) | ForEach-Object { ConvertTo-ClaudeCXSafeText -Text $_ -MaxLength 300 })
         status = $status
         bridge_alive = $bridgeAlive
         stop_requested = $stopRequested
@@ -471,6 +481,42 @@ function Get-ClaudeCXDashboardChanges {
         max_diff_bytes = $MaxDiffBytes
         errors = $errors.ToArray()
         generated_at = [DateTimeOffset]::Now.ToString('o')
+    }
+}
+
+function Save-ClaudeCXRunChanges {
+    # Best effort: keeps the run's final status and diff in changes.json so history can show what
+    # this run changed even after the repository moves on. Never throws.
+    param(
+        [Parameter(Mandatory = $true)][string]$Repository,
+        [Parameter(Mandatory = $true)][string]$TurnDirectory
+    )
+
+    try {
+        $changes = Get-ClaudeCXDashboardChanges -Metadata ([pscustomobject]@{ repository = $Repository })
+        $paths = Get-ClaudeCXDashboardPaths -TurnDirectory $TurnDirectory
+        Write-ClaudeCXAtomicFile -Path $paths.Changes -Content (ConvertTo-Json -InputObject $changes -Depth 5 -Compress)
+    }
+    catch { }
+}
+
+function Get-ClaudeCXSavedChanges {
+    # The diff saved when the run ended, or $null for runs that ended before snapshots existed.
+    param([Parameter(Mandatory = $true)][string]$TurnDirectory)
+
+    $paths = Get-ClaudeCXDashboardPaths -TurnDirectory $TurnDirectory
+    $saved = Read-ClaudeCXJsonFile -Path $paths.Changes
+    if ($null -eq $saved) { return $null }
+    $errors = ConvertTo-ClaudeCXStringList -Value $saved.PSObject.Properties['errors']?.Value
+    return [ordered]@{
+        status_text = [string]$saved.PSObject.Properties['status_text']?.Value
+        status_truncated = ($saved.PSObject.Properties['status_truncated']?.Value -eq $true)
+        diff_text = [string]$saved.PSObject.Properties['diff_text']?.Value
+        diff_truncated = ($saved.PSObject.Properties['diff_truncated']?.Value -eq $true)
+        max_diff_bytes = Get-ClaudeCXNumber -Object $saved -Name 'max_diff_bytes'
+        errors = @($errors)
+        generated_at = Get-ClaudeCXIsoTime -Object $saved -Name 'generated_at'
+        snapshot = $true
     }
 }
 
@@ -671,8 +717,12 @@ function Invoke-ClaudeCXDashboardRequest {
 }
 
 function Read-ClaudeCXHttpRequest {
-    # Bounded HTTP/1.1 request reader: 16 KiB of headers, 4 KiB of body, then the connection closes.
-    param([Parameter(Mandatory = $true)][IO.Stream]$Stream)
+    # Bounded HTTP/1.1 request reader: 16 KiB of headers and -MaxBodyBytes of body (4 KiB by default).
+    # The body is returned as UTF-8 text; the connection then closes.
+    param(
+        [Parameter(Mandatory = $true)][IO.Stream]$Stream,
+        [ValidateRange(0, 65536)][int]$MaxBodyBytes = 4096
+    )
 
     $limit = 16384
     $buffer = [IO.MemoryStream]::new()
@@ -701,14 +751,21 @@ function Read-ClaudeCXHttpRequest {
     if ($headers.Contains('content-length') -and -not [int]::TryParse([string]$headers['content-length'], [ref]$length)) {
         throw 'invalid content length'
     }
-    if ($length -gt 4096 -or $length -lt 0) { throw 'request body too large' }
+    if ($length -gt $MaxBodyBytes -or $length -lt 0) { throw 'request body too large' }
     $received = $buffer.Length - ($headerEnd + 4)
     while ($received -lt $length) {
         $count = $Stream.Read($one, 0, $one.Length)
         if ($count -le 0) { break }
+        $buffer.Write($one, 0, $count)
         $received += $count
     }
-    return [pscustomobject]@{ Method = $parts[0]; Target = $parts[1]; Headers = $headers }
+    $body = ''
+    if ($length -gt 0) {
+        $all = $buffer.ToArray()
+        $available = [Math]::Min($length, $all.Length - ($headerEnd + 4))
+        try { $body = [Text.UTF8Encoding]::new($false, $true).GetString($all, $headerEnd + 4, $available) } catch { throw 'request body is not UTF-8' }
+    }
+    return [pscustomobject]@{ Method = $parts[0]; Target = $parts[1]; Headers = $headers; Body = $body }
 }
 
 function Write-ClaudeCXHttpResponse {
@@ -717,7 +774,7 @@ function Write-ClaudeCXHttpResponse {
         [Parameter(Mandatory = $true)][object]$Response
     )
 
-    $reasons = @{ 200 = 'OK'; 202 = 'Accepted'; 400 = 'Bad Request'; 401 = 'Unauthorized'; 403 = 'Forbidden'; 404 = 'Not Found'; 405 = 'Method Not Allowed'; 409 = 'Conflict'; 421 = 'Misdirected Request'; 500 = 'Internal Server Error' }
+    $reasons = @{ 200 = 'OK'; 202 = 'Accepted'; 400 = 'Bad Request'; 413 = 'Content Too Large'; 415 = 'Unsupported Media Type'; 422 = 'Unprocessable Content'; 401 = 'Unauthorized'; 403 = 'Forbidden'; 404 = 'Not Found'; 405 = 'Method Not Allowed'; 409 = 'Conflict'; 421 = 'Misdirected Request'; 500 = 'Internal Server Error' }
     $reason = if ($reasons.ContainsKey($Response.Status)) { $reasons[$Response.Status] } else { 'Status' }
     $builder = [Text.StringBuilder]::new()
     [void]$builder.Append("HTTP/1.1 $($Response.Status) $reason`r`n")
@@ -932,6 +989,18 @@ Export-ModuleMember -Function @(
     'Get-ClaudeCXDashboardState',
     'Invoke-ClaudeCXDashboardGit',
     'Get-ClaudeCXDashboardChanges',
+    'Save-ClaudeCXRunChanges',
+    'Get-ClaudeCXSavedChanges',
+    'Read-ClaudeCXJsonFile',
+    'Read-ClaudeCXPromptFile',
+    'Get-ClaudeCXIsoTime',
+    'Get-ClaudeCXNumber',
+    'New-ClaudeCXDashboardResponse',
+    'New-ClaudeCXJsonResponse',
+    'Read-ClaudeCXHttpRequest',
+    'Write-ClaudeCXHttpResponse',
+    'Get-ClaudeCXPwshPath',
+    'Open-ClaudeCXBrowser',
     'Get-ClaudeCXDashboardReport',
     'Get-ClaudeCXDashboardPrompts',
     'New-ClaudeCXDashboardContext',
@@ -939,7 +1008,6 @@ Export-ModuleMember -Function @(
     'Invoke-ClaudeCXDashboardConnection',
     'Write-ClaudeCXAtomicFile',
     'Start-ClaudeCXDashboardServer',
-    'Open-ClaudeCXBrowser',
     'Start-ClaudeCXDashboard',
     'Start-ClaudeCXProgressDisplay'
 )

@@ -14,6 +14,18 @@ Use Claude Code as the implementation worker while Codex owns scoping, the hando
 3. Never invoke this skill implicitly. The user must explicitly request Claude delegation or name `$claudecx`.
 4. Keep one writer. Do not edit repository files while a Claude bridge run is active.
 
+## Settings
+
+The user's ClaudeCX settings (budget, turns, and time per run, the Claude model, the live view, log retention, and protected paths) live in `%USERPROFILE%\.claudecx\settings.json` and apply to every run. A repository may commit a `.claudecx.json` that lowers the limits and adds protected paths; the bridge reads it from `HEAD`. Before writing the brief, read the effective values for this project:
+
+```powershell
+pwsh -NoProfile -File "<skill-root>\scripts\claudecx-settings.ps1" -ProjectPath "<repo-root>" -Json
+```
+
+List every protected path in the brief as off limits. The bridge checks them after the run: a run that changes one fails, and the edits stay in the working tree. Resume the session to have Claude undo them, or tell the user.
+
+If the user asks you to change a setting ("raise the budget to 10 dollars", "use Sonnet", "protect the migrations folder"), run the same script with `-Set`, for example `-Set max_budget_usd=10` or `-Set "protected_paths=db/migrations/,.github/workflows/"` (a list replaces the old one, so include the existing entries), then confirm the new value. Settings apply to the next run. Safety switches (safe mode, the commit/push/deploy ban, permission mode, the clean-tree and resume checks, the structured report) are not settings and cannot be changed. The user can also change settings in the control center, a local page that ClaudeCX installs as **ClaudeCX** in the Start menu.
+
 ## Prepare the brief
 
 Write a UTF-8 Markdown brief outside the repository. Include:
@@ -38,16 +50,16 @@ Invoke `scripts/invoke-claude.ps1` with the repository root, the brief path, and
 pwsh -NoProfile -File "<skill-root>\scripts\invoke-claude.ps1" `
   -ProjectPath "<repo-root>" `
   -BriefPath "<brief.md>" `
-  -OriginalPromptPath "<original-request.md>" `
-  -MaxTurns 60 `
-  -MaxBudgetUsd 5
+  -OriginalPromptPath "<original-request.md>"
 ```
 
-By default (`-ProgressMode Dashboard`) the wrapper opens a local dashboard in the default browser at `http://127.0.0.1:<port>/` (loopback only, per-run token in the URL fragment). It shows the collaboration flow (your request, the Codex handoff, Claude's implementation, then Codex review as the next step), the prompt journey (the exact original request and the exact brief Claude received, as plain text with a heading-derived outline of the structure you added), the sanitized activity, the current `git status --short` and diff against HEAD, and the final report or failure reason. Its only control besides Refresh and Copy is a confirmed **Stop run**, which asks the bridge (through `stop-request.json` in the turn folder) to terminate Claude; the run then fails with `status: stopped`, partial edits stay in the working tree, and you must review them like any other failure. Tell the user the dashboard is there, that closing it does not stop Claude, and that Stop run does not revert edits. If the dashboard cannot start, the wrapper warns on stderr and falls back to `-ProgressMode Window`, then `Console`, with the same Claude flags.
+Do not pass `-MaxTurns`, `-MaxBudgetUsd`, `-TimeoutSeconds`, or `-ProgressMode` by default: the user's settings decide them. Pass a limit only to make a small task cheaper; a value above the user's setting is capped and the dashboard says so.
+
+When the user's ClaudeCX control center is running, the run appears there instead of in a separate dashboard, and the control center comes to the front if no tab of it is open. Otherwise, by default (`-ProgressMode Dashboard`), the wrapper opens a local dashboard in the default browser at `http://127.0.0.1:<port>/` (loopback only, per-run token in the URL fragment). It shows the collaboration flow (your request, the Codex handoff, Claude's implementation, then Codex review as the next step), the prompt journey (the exact original request and the exact brief Claude received, as plain text with a heading-derived outline of the structure you added), the sanitized activity, the current `git status --short` and diff against HEAD, and the final report or failure reason. Its only control besides Refresh and Copy is a confirmed **Stop run**, which asks the bridge (through `stop-request.json` in the turn folder) to terminate Claude; the run then fails with `status: stopped`, partial edits stay in the working tree, and you must review them like any other failure. Tell the user the dashboard is there, that closing it does not stop Claude, and that Stop run does not revert edits. If the dashboard cannot start, the wrapper warns on stderr and falls back to `-ProgressMode Window`, then `Console`, with the same Claude flags.
 
 With `-ProgressMode Window` the wrapper opens a separate read-only PowerShell window titled `ClaudeCX - <repo>` that shows one sanitized line per phase or tool action (tool and phase names, generic activity labels, and safe repository-relative paths; shell commands appear only as `running command` or `running <program>`, searches as `searching`, and URL tools as `requesting URL`; patterns, queries, hosts, prompts, and arguments are never shown). Tell the user it is there: it is only an observer, typing in it does nothing, and closing it does not stop Claude. It closes shortly after success and stays open after a failure. Use `-ProgressMode Console` to send progress to stderr instead (stdout still carries only the final JSON line), or `-ProgressMode None` for no live display, for example in CI or headless terminals. If the window cannot open, the wrapper warns on stderr and continues in `Console` mode with the same Claude flags. Displayed paths are shortened and masked, but a file name can still be sensitive. The raw commands are kept only in `claude-events.jsonl`.
 
-Each turn folder keeps `codex-brief.md` (the exact brief Claude received; the wrapper sends this copy as Claude's input), `original-prompt.md` (only when `-OriginalPromptPath` was passed), `claude-events.jsonl` (raw stream-json events), `claude-result.json` (final result event), `claude-stderr.txt`, and `progress.log` (the sanitized progress the dashboard and window show). A stopped run writes `failure.json` with `status: stopped`. The success JSON includes `events_path` and `progress_log_path`.
+Each turn folder keeps `dashboard.json` (run facts and the limits used), `changes.json` (the status and diff when the run ended), `codex-brief.md` (the exact brief Claude received; the wrapper sends this copy as Claude's input), `original-prompt.md` (only when `-OriginalPromptPath` was passed), `claude-events.jsonl` (raw stream-json events), `claude-result.json` (final result event), `claude-stderr.txt`, and `progress.log` (the sanitized progress the dashboard and window show). A stopped run writes `failure.json` with `status: stopped`. The success JSON includes `events_path` and `progress_log_path`.
 
 The wrapper uses `--safe-mode`, a bridge-only settings file, an explicit role system prompt, strict empty MCP configuration, disabled auto-memory and background tasks, a preassigned UUID, stream-json transport with a structured final report, a timeout, a budget ceiling, and handoff state under `%LOCALAPPDATA%\CodexClaude\handoffs`. Safe mode preserves OAuth/keychain authentication; bare mode does not and is therefore unsuitable for subscription-authenticated Claude Code.
 

@@ -16,10 +16,15 @@ $script:RequiredSkillFiles = @(
     'dashboard/app.js',
     'dashboard/index.html',
     'dashboard/styles.css',
+    'scripts/ClaudeCX.ControlCenter.psm1',
     'scripts/ClaudeCX.Dashboard.psm1',
     'scripts/ClaudeCX.Progress.psm1',
+    'scripts/ClaudeCX.Settings.psm1',
+    'scripts/claudecx-settings.ps1',
     'scripts/invoke-claude.ps1',
+    'scripts/show-control-center.ps1',
     'scripts/show-dashboard.ps1',
+    'scripts/start-control-center.ps1',
     'scripts/test-claude-bridge.ps1',
     'scripts/watch-progress.ps1'
 )
@@ -365,6 +370,90 @@ function Set-ClaudeCXAttributionDisabled {
     return [pscustomobject]@{ Changed = $true; Path = $Path; BackupPath = $backupPath }
 }
 
+function Get-ClaudeCXShortcutPaths {
+    # Start menu and sign-in (Startup) shortcuts for the control center, under %APPDATA%.
+    if (-not $env:APPDATA) {
+        throw 'APPDATA is unavailable; cannot place the Start menu shortcut. Use -NoShortcut.'
+    }
+    $programs = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+    return [pscustomobject]@{
+        StartMenu = Join-Path $programs 'ClaudeCX.lnk'
+        Startup = Join-Path $programs 'Startup\ClaudeCX control center.lnk'
+    }
+}
+
+function Get-ClaudeCXSystemPwsh {
+    # Prefer the pwsh on PATH over a bundled copy, so shortcuts survive tool updates.
+    $command = Get-Command pwsh -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($command) { return $command.Source }
+    return [Environment]::ProcessPath
+}
+
+function New-ClaudeCXControlCenterShortcut {
+    # Creates a shortcut that runs start-control-center.ps1 hidden. Shortcut arguments are a single
+    # string by design; the only variable part is the installed script path, which is quoted.
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$LauncherPath,
+        [switch]$NoBrowser
+    )
+
+    if ($LauncherPath.Contains('"')) { throw "Unexpected quote in the launcher path: $LauncherPath" }
+    [IO.Directory]::CreateDirectory((Split-Path -Parent $Path)) | Out-Null
+    $arguments = '-NoProfile -WindowStyle Hidden -File "' + $LauncherPath + '"'
+    if ($NoBrowser) { $arguments += ' -NoBrowser' }
+    $shell = New-Object -ComObject WScript.Shell
+    try {
+        $shortcut = $shell.CreateShortcut($Path)
+        $shortcut.TargetPath = Get-ClaudeCXSystemPwsh
+        $shortcut.Arguments = $arguments
+        $shortcut.WorkingDirectory = Split-Path -Parent $LauncherPath
+        $shortcut.Description = 'ClaudeCX control center: live runs, history, settings, and health'
+        $shortcut.WindowStyle = 7
+        $shortcut.Save()
+    }
+    finally {
+        [void][Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
+    }
+}
+
+function Remove-ClaudeCXControlCenterShortcuts {
+    # Removes only shortcuts that point at a ClaudeCX launcher. Returns the paths removed.
+    $removed = [Collections.Generic.List[string]]::new()
+    $paths = Get-ClaudeCXShortcutPaths
+    $shell = New-Object -ComObject WScript.Shell
+    try {
+        foreach ($path in @($paths.StartMenu, $paths.Startup)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+            $shortcut = $shell.CreateShortcut($path)
+            if ([string]$shortcut.Arguments -like '*start-control-center.ps1*') {
+                Remove-Item -LiteralPath $path -Force
+                $removed.Add($path)
+            }
+        }
+    }
+    finally {
+        [void][Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
+    }
+    return $removed.ToArray()
+}
+
+function Stop-ClaudeCXRunningControlCenter {
+    # Stops a running control center (it may be serving files that are about to be replaced).
+    # Returns $true when one was running.
+    param([Parameter(Mandatory = $true)][string]$SettingsModulePath)
+
+    Import-Module $SettingsModulePath -Force
+    $running = Get-ClaudeCXControlCenter
+    if ($null -eq $running) { return $false }
+    try { (Get-Process -Id $running.ProcessId -ErrorAction Stop).Kill($true) } catch { }
+    $files = Get-ClaudeCXControlCenterPaths
+    foreach ($path in @($files.Info, $files.Token)) {
+        Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    }
+    return $true
+}
+
 Export-ModuleMember -Function @(
     'Get-ClaudeCXSkillName',
     'Get-ClaudeCXRequiredSkillFiles',
@@ -385,5 +474,10 @@ Export-ModuleMember -Function @(
     'Test-ClaudeCXTreeEqual',
     'Write-ClaudeCXUtf8File',
     'Read-ClaudeCXSettingsNode',
-    'Set-ClaudeCXAttributionDisabled'
+    'Set-ClaudeCXAttributionDisabled',
+    'Get-ClaudeCXShortcutPaths',
+    'Get-ClaudeCXSystemPwsh',
+    'New-ClaudeCXControlCenterShortcut',
+    'Remove-ClaudeCXControlCenterShortcuts',
+    'Stop-ClaudeCXRunningControlCenter'
 )

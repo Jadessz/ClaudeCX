@@ -61,7 +61,7 @@ Write-Host '[repository layout]'
 foreach ($required in @(
         'README.md', 'SECURITY.md', 'CONTRIBUTING.md', 'AGENTS.md', 'docs/ARCHITECTURE.md',
         '.gitignore', '.gitattributes', 'install.ps1', 'uninstall.ps1', 'doctor.ps1', 'docs/AGENT-SETUP.md',
-        'scripts/ClaudeCX.Common.psm1', 'scripts/test-static.ps1', 'scripts/test-install.ps1', 'scripts/test-live.ps1', 'scripts/test-progress.ps1', 'scripts/test-dashboard.ps1', 'scripts/test-doctor.ps1')) {
+        'scripts/ClaudeCX.Common.psm1', 'scripts/test-static.ps1', 'scripts/test-install.ps1', 'scripts/test-live.ps1', 'scripts/test-progress.ps1', 'scripts/test-dashboard.ps1', 'scripts/test-doctor.ps1', 'scripts/test-control-center.ps1')) {
     Assert-True (Test-Path -LiteralPath (Join-Path $repoRoot $required) -PathType Leaf) "required file exists: $required"
 }
 foreach ($required in (Get-ClaudeCXRequiredSkillFiles)) {
@@ -240,11 +240,24 @@ $bridgeChecks = [ordered]@{
     'structured process arguments' = '$startInfo.ArgumentList.Add($argument)'
     'brief sent through stdin' = '$process.StandardInput.Write($briefText)'
     'non-zero exit on failure' = 'exit 1'
+    'settings module loaded' = "Join-Path `$PSScriptRoot 'ClaudeCX.Settings.psm1'"
+    'invalid user settings stop the run' = 'if ($userSettings.Errors.Count -gt 0) {'
+    'invalid project settings stop the run' = 'if ($projectSettings.Errors.Count -gt 0) {'
+    'limits resolved with user settings as the ceiling' = 'Resolve-ClaudeCXRunSettings -User $userSettings.Values -Project $projectSettings.Values -Requested $requestedLimits'
+    'protected paths enforced after the run' = 'Find-ClaudeCXProtectedChanges -ChangedPaths @(Get-ClaudeCXChangedPaths -Repository $repoRoot) -Patterns $runSettings.ProtectedPaths'
 }
 foreach ($entry in $bridgeChecks.GetEnumerator()) {
     Assert-True ($bridgeText.Contains($entry.Value)) "bridge invariant: $($entry.Key)"
 }
 Assert-True ($bridgeText.IndexOf('Assert-ClaudeCXResultSuccess') -lt $bridgeText.IndexOf('Claude changed Git HEAD from')) 'result is checked before HEAD and report processing'
+Assert-True ($bridgeText.IndexOf('Read-ClaudeCXUserSettings') -lt $bridgeText.IndexOf("'active.lock'")) 'settings are validated before any bridge state is created'
+Assert-True ($bridgeText.IndexOf('Find-ClaudeCXProtectedChanges') -lt $bridgeText.IndexOf("Complete-ClaudeCXProgress -Sink `$progress -Status 'success'")) 'protected paths are checked before a run can succeed'
+$settingsModuleText = Read-RepoText 'skill/claudecx/scripts/ClaudeCX.Settings.psm1'
+Assert-True ($settingsModuleText.Contains('show "HEAD:$($script:ProjectFileName)"')) 'project settings are read from HEAD, not the working tree'
+Assert-True ($settingsModuleText.Contains("`$protected.Add(`$script:ProjectFileName)")) '.claudecx.json is always protected'
+foreach ($lockedKey in @('safe', 'permission', 'mcp', 'hook', 'commit', 'push')) {
+    Assert-True (-not ($settingsModuleText -match "key = '[a-z_]*$lockedKey")) "no setting can switch off $lockedKey"
+}
 
 # --- Progress module and monitor ---
 Write-Host '[progress module]'
@@ -331,6 +344,25 @@ foreach ($doc in @('AGENTS.md', 'README.md', 'docs/AGENT-SETUP.md')) {
 }
 Assert-True ((Read-RepoText 'AGENTS.md').Contains('docs/AGENT-SETUP.md')) 'AGENTS.md points agents to the setup runbook'
 
+Write-Host '[control center]'
+$centerText = Read-RepoText 'skill/claudecx/scripts/ClaudeCX.ControlCenter.psm1'
+$centerServer = Read-RepoText 'skill/claudecx/scripts/show-control-center.ps1'
+Assert-True ($centerServer.Contains('[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)')) 'control center binds IPv4 loopback with an OS-assigned port'
+Assert-True (-not ($centerText + $centerServer).Contains('HttpListener') -and -not ($centerText + $centerServer).Contains('IPAddress]::Any')) 'control center never uses HttpListener or wildcard addresses'
+Assert-True ($centerServer.Contains('[Environment]::SetEnvironmentVariable($tokenVariable, [NullString]::Value)')) 'control center removes the token from its environment'
+Assert-True ($centerText.Contains('Test-ClaudeCXDashboardToken -Expected $Context.Token') -and $centerText.Contains("'forbidden_origin'") -and $centerText.Contains("'unsupported_media_type'")) 'control center checks the token, the origin, and the content type'
+Assert-True ($centerText.Contains('Resolve-ClaudeCXRunId')) 'control center addresses runs only through validated ids'
+$centerTest = & ([Environment]::ProcessPath) -NoProfile -NonInteractive -File (Join-Path $PSScriptRoot 'test-control-center.ps1') 2>&1
+$centerExit = $LASTEXITCODE
+if ($centerExit -ne 0) {
+    $centerTest | ForEach-Object { Write-Host "    $_" }
+}
+Assert-True ($centerExit -eq 0) "test-control-center.ps1 passes ($(@($centerTest)[-1]))"
+foreach ($doc in @('README.md', 'SECURITY.md', 'docs/ARCHITECTURE.md', 'skill/claudecx/SKILL.md')) {
+    $docText = Read-RepoText $doc
+    Assert-True ($docText.Contains('control center') -and $docText.Contains('.claudecx.json')) "$doc documents the control center and project settings"
+}
+
 # --- Bridge settings asset ---
 Write-Host '[bridge settings]'
 $settings = [Text.Json.Nodes.JsonNode]::Parse((Read-RepoText 'skill/claudecx/assets/bridge-settings.json'))
@@ -344,7 +376,7 @@ $denyRules = @(if ($null -ne $permissions -and $null -ne $permissions['deny']) {
 foreach ($rule in @('mcp__*', 'Read(./.env)', 'Read(./**/.env)', 'Bash(git *commit*)', 'Bash(git *push*)', 'Bash(git *tag*)',
         'Bash(gh *pr create*)', 'Bash(codex *)', 'Bash(claude *)', 'Bash(npm publish*)', 'Bash(curl *)',
         'PowerShell(git *commit*)', 'PowerShell(git *push*)', 'PowerShell(codex *)', 'PowerShell(claude *)',
-        'PowerShell(Invoke-WebRequest *)')) {
+        'PowerShell(Invoke-WebRequest *)', 'Read(~/.claudecx/**)', 'Edit(~/.claudecx/**)')) {
     Assert-True ($denyRules -contains $rule) "bridge settings deny $rule"
 }
 $allowRules = @(if ($null -ne $permissions -and $null -ne $permissions['allow']) { $permissions['allow'] })

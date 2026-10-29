@@ -9,8 +9,10 @@ Targets only <CodexHome>\skills\claudecx, where Codex home is resolved from
 moved to a timestamped backup under <CodexHome>\claudecx-backups so it can be
 restored. -Permanent deletes it instead.
 
-Handoff logs under %LOCALAPPDATA%\CodexClaude\handoffs, Claude settings, and
-other Codex skills are never touched.
+The control center is stopped and its Start menu and sign-in shortcuts are
+removed. Handoff logs under %LOCALAPPDATA%\CodexClaude\handoffs, your ClaudeCX
+settings in %USERPROFILE%\.claudecx, Claude settings, and other Codex skills
+are never touched.
 
 Without -Yes the script asks for confirmation, which fails in non-interactive
 sessions. Pass -Yes to confirm non-interactively.
@@ -77,6 +79,18 @@ if (-not $PSCmdlet.ShouldProcess($destination, $action)) {
     return
 }
 
+$settingsModule = Join-Path $destination 'scripts\ClaudeCX.Settings.psm1'
+if (Test-Path -LiteralPath $settingsModule -PathType Leaf) {
+    if (Stop-ClaudeCXRunningControlCenter -SettingsModulePath $settingsModule) {
+        Write-Host 'Stopped the ClaudeCX control center.'
+    }
+}
+$removedShortcuts = @()
+try { $removedShortcuts = @(Remove-ClaudeCXControlCenterShortcuts) } catch { Write-Host "Shortcuts were not checked: $($_.Exception.Message)" }
+foreach ($removedShortcut in $removedShortcuts) {
+    Write-Host "Removed shortcut $removedShortcut"
+}
+
 if ($Permanent) {
     Remove-Item -LiteralPath $destination -Recurse -Force
     Write-Host "Permanently removed ClaudeCX from $destination"
@@ -87,4 +101,4 @@ else {
     Write-Host "Moved ClaudeCX from $destination to $backupPath"
     Write-Host "To restore it, move that folder back to $destination"
 }
-Write-Host 'Handoff logs and Claude settings were not changed. Restart Codex to refresh its skill list.'
+Write-Host 'Handoff logs, ClaudeCX settings, and Claude settings were not changed. Restart Codex to refresh its skill list.'

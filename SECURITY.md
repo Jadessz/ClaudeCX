@@ -6,7 +6,8 @@ ClaudeCX lowers the risk of handing coding work to an autonomous agent. It does 
 
 ClaudeCX is meant to limit:
 
-- **Scope creep and runaway work.** It sets a turn limit, a USD budget limit, a wall-clock timeout, and a scoped brief.
+- **Scope creep and runaway work.** It sets a turn limit, a USD budget limit, a wall-clock timeout, and a scoped brief. The user's settings are the ceiling for all three; Codex and a repository's `.claudecx.json` can only lower them.
+- **Changes to files the user protected.** Protected paths from the user's settings and the committed `.claudecx.json` are compared with `git status` after every run, and a match fails the run.
 - **Accidental history or remote changes.** The deny rules block commit, push, tag, PR creation and merge, release, publish, and deploy commands. After each run the bridge checks that `HEAD` has not moved.
 - **Configuration injection from the repository.** Safe mode ignores repository `CLAUDE.md`, skills, plugins, hooks, agents, and MCP servers. `disableAllHooks` and an empty strict MCP config add a second layer.
 - **Recursive delegation.** `AGENT_HANDOFF_DEPTH` stops a nested bridge call, and deny rules cover `codex` and `claude` commands.
@@ -26,7 +27,9 @@ ClaudeCX does not protect against:
 | Control | Enforced by | Strength |
 | --- | --- | --- |
 | Clean tree for new runs, stable state for resumes, unchanged `HEAD` | Bridge (Git checks) | Strong. Checked outside Claude. |
-| Turn, budget, and timeout limits | Claude Code flags, plus a bridge timeout that kills the process tree | Strong |
+| Turn, budget, and timeout limits | Claude Code flags, plus a bridge timeout that kills the process tree; values capped by the user's settings | Strong |
+| Protected paths | Bridge compares `git status` (including untracked files and both sides of renames) with the protected patterns after the run | Strong for detection; it cannot stop the edit or an effect outside the repository |
+| Project limits cannot be loosened by the run | Bridge reads `.claudecx.json` from `HEAD` and always protects it | Strong |
 | Strict stream protocol | Bridge parses every stdout line as one JSON event and fails closed on a malformed line | Strong |
 | Hooks, plugins, skills, MCP, and auto-memory off | `--safe-mode`, `disableAllHooks`, `--strict-mcp-config`, environment variables | Strong, as long as Claude Code honors its flags |
 | No commit, push, publish, deploy, cloud, or network-shell commands | Permission deny rules in `bridge-settings.json` | **Partial.** See below. |
@@ -65,6 +68,22 @@ The default `-ProgressMode Dashboard` starts `show-dashboard.ps1` as a separate,
 - **Control.** Stop run is the only mutation. It atomically creates `stop-request.json` (timestamp and source only) in the turn folder; the bridge, not the server, terminates Claude's process tree and records the run as stopped. Partial edits are preserved for Codex review. The server cannot touch Claude's stdin or stdout.
 - **Lifetime.** Closing the browser never stops Claude. The server exits after the run completes (idle or linger timeout), when the bridge process disappears without completing, or at a hard lifetime limit.
 - **Fallback.** If the dashboard cannot start or the browser cannot open, the bridge warns and falls back to `Window`, then `Console`. This never changes Claude's flags, permissions, or limits.
+
+## Settings and the control center
+
+**Settings.** `%USERPROFILE%\.claudecx\settings.json` (or `CLAUDECX_HOME`) holds limits, the model, display choices, log retention, and protected paths. It holds no secrets and no safety switches: there is no setting for safe mode, the deny rules, the permission mode, the Git checks, the MCP isolation, or the report requirement. The file is validated strictly; any invalid value makes the bridge refuse to start rather than fall back to something else. `bridge-settings.json` denies Claude's `Read` and `Edit` tools on `~/.claudecx/**`, so Claude cannot use them to raise its own limits for a later run. Like every text rule, this does not stop a shell command, so treat the settings file like your other user configuration. Settings are read once when a run starts, so nothing can change the limits of a run in progress.
+
+**Project file.** A repository's `.claudecx.json` can only lower the three limits and add protected paths; it cannot raise a limit, choose a model, or change display or retention. That keeps a cloned repository from making ClaudeCX spend more. The bridge reads it with `git show HEAD:.claudecx.json`, so working-tree edits (including Claude's) never count, and the file itself is always a protected path.
+
+**Control center.** `show-control-center.ps1` is a hidden, long-running PowerShell process started by `start-control-center.ps1` (the Start menu shortcut). It reuses the dashboard's hardening: a `TcpListener` on `127.0.0.1` with an OS-assigned port, the exact `Host` check, a 256-bit CSPRNG token compared in constant time and sent as `Authorization: Bearer`, the same CSP and security headers, one request per connection, and JSON escaping. It differs in these ways:
+
+- **Token at rest.** So the shortcut can reopen the page, the token is kept in `control-center.token` in the ClaudeCX home while the server runs, separate from `control-center.json` (port, PID, start time). Any process running as your user can read it, as it can read the handoff logs and your settings. The files are deleted when the server stops, and a new token is made on every start.
+- **Routes.** `GET /api/center`, `GET /api/runs`, `GET /api/run/{state,changes,report,prompts}?run=<id>`, `POST /api/run/stop?run=<id>`, `GET` and `POST /api/settings`, `GET /api/health`, `POST /api/logs/prune`, and `POST /api/center/quit`. A run id must match `root/repo-key/session/turn` exactly, where `root` is the short hash of a discovered log folder and the other parts match the bridge's own naming; anything else is a 404, and no path is built from free text. Symbolic links and junctions in the log folders are skipped.
+- **Writes.** Every `POST` needs the token, rejects a foreign `Origin`, and requires `Content-Type: application/json` when it has a body (bodies are capped at 32 KiB). Settings are validated by the same code the bridge uses before they are written atomically. Pruning deletes only turn folders that have a completion marker older than the chosen number of days (1 to 3650), never a running turn. Stop writes the same `stop-request.json` marker as the per-run dashboard.
+- **Health checks** run only `git --version`, `claude --version`, and `claude auth status`, through `ProcessStartInfo.ArgumentList` with timeouts.
+- **Log folders.** It reads the standard folder and every `%LOCALAPPDATA%\Packages\*\LocalCache\Local\CodexClaude\handoffs` folder that exists, read-only except for pruning and the stop marker.
+- **Browser opening.** When a new run starts and no page has polled in the last few seconds, it opens the default browser at its own `127.0.0.1` address (unless `open_center_on_new_run` is off). The bridge then skips its per-run server; it never receives the control center's token.
+- **One instance per user.** A named mutex derived from the ClaudeCX home allows one server; the installer stops it before replacing the skill files and starts it again afterwards.
 
 ## Progress window
 

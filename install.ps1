@@ -17,6 +17,11 @@ internet, which would stop PowerShell from running the bridge). Afterwards the
 installer runs doctor.ps1 to report anything else missing (Git, Claude Code,
 sign-in, browser); use -SkipChecks to skip that.
 
+A "ClaudeCX" Start menu shortcut opens the control center: live runs, history,
+settings, and health (-NoShortcut skips it). -StartAtLogin also starts the
+control center quietly when you sign in to Windows. A control center that is
+already running is stopped during the update and started again afterwards.
+
 -DisableClaudeAttribution optionally sets attribution.commit, attribution.pr, and
 attribution.sessionUrl in a Claude settings file (default: the global
 %USERPROFILE%\.claude\settings.json, or CLAUDE_CONFIG_DIR\settings.json) while
@@ -47,7 +52,13 @@ param(
     [string]$ClaudeSettingsPath,
 
     # Do not run the setup checks (doctor.ps1) after installing.
-    [switch]$SkipChecks
+    [switch]$SkipChecks,
+
+    # Do not create the Start menu shortcut for the control center.
+    [switch]$NoShortcut,
+
+    # Also start the control center (without opening the browser) when you sign in to Windows.
+    [switch]$StartAtLogin
 )
 
 Set-StrictMode -Version Latest
@@ -58,6 +69,9 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 }
 if ($ClaudeSettingsPath -and -not $DisableClaudeAttribution) {
     throw '-ClaudeSettingsPath is only used together with -DisableClaudeAttribution.'
+}
+if ($NoShortcut -and $StartAtLogin) {
+    throw '-StartAtLogin creates a shortcut; it cannot be combined with -NoShortcut.'
 }
 
 Import-Module (Join-Path $PSScriptRoot 'scripts\ClaudeCX.Common.psm1') -Force
@@ -95,6 +109,9 @@ if ($existing) {
         throw "ClaudeCX is already installed at $destination. Re-run with -Force to update it (the current copy is backed up first)."
     }
 }
+
+# A running control center serves files from the installed copy; stop it before replacing them.
+$restartCenter = Stop-ClaudeCXRunningControlCenter -SettingsModulePath (Join-Path $source 'scripts\ClaudeCX.Settings.psm1')
 
 # 4. Stage and verify a complete copy beside the skills folder.
 [IO.Directory]::CreateDirectory($skillsDir) | Out-Null
@@ -159,11 +176,32 @@ if ($DisableClaudeAttribution) {
     }
 }
 
+# 8. Control center shortcuts, and a restart if it was running before the update.
+$launcher = Join-Path $destination 'scripts\start-control-center.ps1'
+if (-not $NoShortcut) {
+    $shortcuts = Get-ClaudeCXShortcutPaths
+    New-ClaudeCXControlCenterShortcut -Path $shortcuts.StartMenu -LauncherPath $launcher
+    Write-Host 'Added "ClaudeCX" to the Start menu: it opens the control center (live runs, history, settings, health).'
+    if ($StartAtLogin) {
+        New-ClaudeCXControlCenterShortcut -Path $shortcuts.Startup -LauncherPath $launcher -NoBrowser
+        Write-Host 'The control center now also starts quietly when you sign in to Windows.'
+    }
+}
+if ($restartCenter) {
+    $restart = & (Get-ClaudeCXSystemPwsh) -NoProfile -NonInteractive -File $launcher -NoBrowser 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host 'Restarted the control center with the updated files.'
+    }
+    else {
+        Write-Host "The control center was stopped for the update; open ClaudeCX from the Start menu to start it again. ($restart)"
+    }
+}
+
 Write-Host ''
 Write-Host 'Next step: open a new Codex chat (restart Codex if it was already running) and invoke $claudecx, for example:'
 Write-Host '  $claudecx Add input validation to the signup form and its unit tests.'
 
-# 8. Check the rest of the setup (Git, Claude Code, sign-in, browser). Problems are reported, not fatal:
+# 9. Check the rest of the setup (Git, Claude Code, sign-in, browser). Problems are reported, not fatal:
 # the skill itself is installed either way.
 if (-not $SkipChecks) {
     & (Join-Path $PSScriptRoot 'doctor.ps1') -CodexHome $codexHomeFull
