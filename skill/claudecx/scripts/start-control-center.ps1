@@ -80,6 +80,7 @@ $startInfo = [Diagnostics.ProcessStartInfo]::new()
 $startInfo.FileName = Get-ClaudeCXPwshPath
 $startInfo.UseShellExecute = $true
 $startInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+$startInfo.WorkingDirectory = [IO.Path]::GetTempPath()
 foreach ($argument in @('-NoProfile', '-NoLogo', '-NonInteractive', '-WindowStyle', 'Hidden', '-File', $serverScript)) {
     $startInfo.ArgumentList.Add($argument)
 }

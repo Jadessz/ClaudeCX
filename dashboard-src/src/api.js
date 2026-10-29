@@ -18,6 +18,8 @@ export const API_SETTINGS = '/api/settings';
 export const API_HEALTH = '/api/health';
 export const API_PRUNE = '/api/logs/prune';
 export const API_QUIT = '/api/center/quit';
+export const API_DATA = '/api/data';
+export const API_WIPE = '/api/data/wipe';
 
 // The token arrives in the URL fragment and is removed from history immediately.
 // It is kept in memory only; reloading the page requires reopening the link.

@@ -179,6 +179,7 @@ if ($DisableClaudeAttribution) {
 # 8. Control center shortcuts, and a restart if it was running before the update.
 $launcher = Join-Path $destination 'scripts\start-control-center.ps1'
 if (-not $NoShortcut) {
+    Import-Module (Join-Path $destination 'scripts\ClaudeCX.Settings.psm1') -Force
     $shortcuts = Get-ClaudeCXShortcutPaths
     New-ClaudeCXControlCenterShortcut -Path $shortcuts.StartMenu -LauncherPath $launcher
     Write-Host 'Added "ClaudeCX" to the Start menu: it opens the control center (live runs, history, settings, health).'

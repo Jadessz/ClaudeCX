@@ -69,7 +69,7 @@ const apiSource = readFileSync(join(srcDir, 'api.js'), 'utf8');
 check(apiSource.includes("history.replaceState") && apiSource.includes("'Authorization': 'Bearer ' + token"), 'api.js strips the fragment token and sends it as a bearer header');
 const routes = [...apiSource.matchAll(/'(\/api\/[a-z/]+)'/g)].map((match) => match[1]).sort();
 const expectedRoutes = [
-  '/api/center', '/api/center/quit', '/api/changes', '/api/health', '/api/logs/prune', '/api/prompts', '/api/report',
+  '/api/center', '/api/center/quit', '/api/changes', '/api/data', '/api/data/wipe', '/api/health', '/api/logs/prune', '/api/prompts', '/api/report',
   '/api/run/changes', '/api/run/prompts', '/api/run/report', '/api/run/state', '/api/run/stop', '/api/runs', '/api/settings',
   '/api/state', '/api/stop'
 ];

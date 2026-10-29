@@ -43,6 +43,9 @@ if (-not $owned) {
 }
 
 $skillRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+# Never hold the skill folder open as the working directory, so it can be uninstalled from the page.
+[Environment]::CurrentDirectory = [IO.Path]::GetTempPath()
+Set-Location -LiteralPath ([IO.Path]::GetTempPath())
 $assetRoot = Join-Path $skillRoot 'dashboard'
 foreach ($asset in @('index.html', 'styles.css', 'app.js')) {
     if (-not (Test-Path -LiteralPath (Join-Path $assetRoot $asset) -PathType Leaf)) {
@@ -118,6 +121,16 @@ finally {
     }
     try { $mutex.ReleaseMutex() } catch { }
     $mutex.Dispose()
+    if ($context.UninstallRequested) {
+        # Requested from the page with a typed confirmation: remove shortcuts, the skill, and the home.
+        try {
+            $removed = @(Remove-ClaudeCXInstall -SkillRoot $skillRoot)
+            $exitReason = "uninstalled ($($removed.Count) items removed)"
+        }
+        catch {
+            $exitReason = "uninstall failed: $($_.Exception.Message)"
+        }
+    }
 }
 [Console]::Error.WriteLine("ClaudeCX control center stopped ($exitReason).")
 exit 0

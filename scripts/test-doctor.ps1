@@ -146,7 +146,7 @@ try {
     $r = Invoke-Doctor
     Assert-True ($r.Status['skill-installed'] -eq 'ok' -and $r.Status['downloaded-files'] -eq 'ok' -and $r.Status['log-folder'] -eq 'ok') 'installed, unblocked skill and a writable log folder pass'
     Assert-True ($r.ExitCode -eq 0 -and $r.Report.ready) 'doctor reports ready'
-    Assert-True (Test-Path -LiteralPath (Join-Path $profileRoot 'AppData\Local\CodexClaude\handoffs')) 'log folder is created under the sandboxed LOCALAPPDATA'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $profileRoot 'AppData\Local\CodexClaude'))) 'the log-folder check leaves no folder behind'
 
     Write-Host '[doctor: problems a newcomer can hit]'
     $r = Invoke-Doctor -SearchPath $withoutClaude

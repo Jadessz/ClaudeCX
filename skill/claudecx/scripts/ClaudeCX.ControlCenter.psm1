@@ -30,8 +30,11 @@ $script:ApiRoutes = @{
     '/api/settings' = 'GET,POST'
     '/api/health' = 'GET'
     '/api/logs/prune' = 'POST'
+    '/api/data' = 'GET'
+    '/api/data/wipe' = 'POST'
     '/api/center/quit' = 'POST'
 }
+$script:WipeConfirmation = 'DELETE'
 
 function Get-ClaudeCXCenterTokenVariable { $script:TokenVariable }
 
@@ -58,6 +61,7 @@ function New-ClaudeCXCenterContext {
         SeenActive = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
         Scanned = $false
         QuitRequested = $false
+        UninstallRequested = $false
         StartedAt = [DateTimeOffset]::Now
     }
 }
@@ -409,6 +413,50 @@ function Invoke-ClaudeCXCenterPrune {
     return @{ Status = 200; Value = [ordered]@{ removed_runs = $result.RemovedRuns; freed_bytes = $result.FreedBytes; days = $days } }
 }
 
+function Get-ClaudeCXDataPayload {
+    param([Parameter(Mandatory = $true)][object]$Context)
+
+    $roots = @(Get-ClaudeCXCenterRoots -Context $Context -Refresh)
+    return [ordered]@{
+        items = @(Get-ClaudeCXDataInventory -Roots $roots -SkillRoot $Context.SkillRoot)
+        run_active = (Test-ClaudeCXRunActive -Roots $roots)
+        confirmation = $script:WipeConfirmation
+    }
+}
+
+function Invoke-ClaudeCXCenterWipe {
+    # Body: {"items": ["run-logs", ...], "confirm": "DELETE"}. 'app' uninstalls after the server stops.
+    param(
+        [Parameter(Mandatory = $true)][object]$Context,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Body
+    )
+
+    $parsed = $null
+    try { $parsed = $Body | ConvertFrom-Json -ErrorAction Stop } catch { }
+    if ($parsed -isnot [Management.Automation.PSCustomObject]) {
+        return @{ Status = 400; Value = [ordered]@{ error = 'bad_request'; messages = @('Send {"items": [...], "confirm": "DELETE"}.') } }
+    }
+    if ([string]$parsed.PSObject.Properties['confirm']?.Value -cne $script:WipeConfirmation) {
+        return @{ Status = 422; Value = [ordered]@{ error = 'not_confirmed'; messages = @("Type $($script:WipeConfirmation) to confirm.") } }
+    }
+    $known = @('run-logs', 'drafts', 'settings', 'skill-backups', 'claude-backups', 'app')
+    $ids = @($parsed.PSObject.Properties['items']?.Value | ForEach-Object { [string]$_ })
+    if ($ids.Count -eq 0 -or @($ids | Where-Object { $known -cnotcontains $_ }).Count -gt 0) {
+        return @{ Status = 422; Value = [ordered]@{ error = 'invalid_items'; messages = @('Choose at least one item to delete.') } }
+    }
+    $roots = @(Get-ClaudeCXCenterRoots -Context $Context -Refresh)
+    if (Test-ClaudeCXRunActive -Roots $roots) {
+        return @{ Status = 409; Value = [ordered]@{ error = 'run_active'; messages = @('A run is in progress. Wait for it to finish, or stop it, then try again.') } }
+    }
+    $results = @(Remove-ClaudeCXData -Ids $ids -Roots $roots -SkillRoot $Context.SkillRoot)
+    $Context.RootsAt = [DateTimeOffset]::MinValue
+    if ($ids -ccontains 'app') {
+        $Context.UninstallRequested = $true
+        $Context.QuitRequested = $true
+    }
+    return @{ Status = 200; Value = [ordered]@{ results = $results; uninstalling = ($ids -ccontains 'app') } }
+}
+
 function Get-ClaudeCXQueryValue {
     param([Parameter(Mandatory = $true)][string]$Target, [Parameter(Mandatory = $true)][string]$Name)
 
@@ -534,6 +582,11 @@ function Invoke-ClaudeCXCenterRequest {
             $pruned = Invoke-ClaudeCXCenterPrune -Context $Context -Body $Body
             return New-ClaudeCXJsonResponse -Status $pruned.Status -Value $pruned.Value
         }
+        '/api/data' { return New-ClaudeCXJsonResponse -Status 200 -Value (Get-ClaudeCXDataPayload -Context $Context) }
+        '/api/data/wipe' {
+            $wiped = Invoke-ClaudeCXCenterWipe -Context $Context -Body $Body
+            return New-ClaudeCXJsonResponse -Status $wiped.Status -Value $wiped.Value
+        }
         '/api/center/quit' {
             $Context.QuitRequested = $true
             return New-ClaudeCXJsonResponse -Status 202 -Value ([ordered]@{ accepted = $true })
@@ -592,6 +645,7 @@ Export-ModuleMember -Function @(
     'Get-ClaudeCXCenterOverview',
     'Get-ClaudeCXSettingsPayload',
     'Get-ClaudeCXHealth',
+    'Get-ClaudeCXDataPayload',
     'Get-ClaudeCXQueryValue',
     'Invoke-ClaudeCXCenterRequest',
     'Invoke-ClaudeCXCenterConnection',

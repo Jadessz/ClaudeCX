@@ -32,7 +32,8 @@ $script:failures = [Collections.Generic.List[string]]::new()
 $script:passed = 0
 $script:cleanup = [Collections.Generic.List[Diagnostics.Process]]::new()
 $savedEnvironment = @{}
-foreach ($name in @('CLAUDECX_HOME', 'LOCALAPPDATA')) { $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name) }
+# Every location the data wipe can reach points into the sandbox, so a test can never delete real files.
+foreach ($name in @('CLAUDECX_HOME', 'LOCALAPPDATA', 'APPDATA', 'TEMP', 'TMP', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME')) { $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name) }
 
 function Assert-True {
     param([bool]$Condition, [string]$Message)
@@ -141,6 +142,12 @@ function Invoke-Center {
 try {
     $home_ = Join-Path $sandbox 'home'
     [Environment]::SetEnvironmentVariable('CLAUDECX_HOME', $home_)
+    [Environment]::SetEnvironmentVariable('APPDATA', (Join-Path $sandbox 'roaming'))
+    [Environment]::SetEnvironmentVariable('TEMP', (Join-Path $sandbox 'temp'))
+    [Environment]::SetEnvironmentVariable('TMP', (Join-Path $sandbox 'temp'))
+    [Environment]::SetEnvironmentVariable('CLAUDE_CONFIG_DIR', (Join-Path $sandbox 'claude-config'))
+    [Environment]::SetEnvironmentVariable('CODEX_HOME', (Join-Path $sandbox 'codex'))
+    [IO.Directory]::CreateDirectory((Join-Path $sandbox 'temp')) | Out-Null
 
     # --- Settings file ---
     Write-Host '[settings]'
@@ -329,6 +336,85 @@ try {
     $announced = @(Find-ClaudeCXNewRuns -Context $fresh)
     Assert-True ($announced.Count -eq 1 -and $announced[0].request -ceq 'Second') 'a run that starts later is announced once'
     Assert-True (@(Find-ClaudeCXNewRuns -Context $fresh).Count -eq 0) 'an announced run is not announced again'
+
+    # --- Your ClaudeCX data: inventory and wipe ---
+    Write-Host '[data wipe]'
+    $tempRoot = Join-Path $sandbox 'temp'
+    $drafts = Join-Path $tempRoot 'claudecx'
+    [IO.Directory]::CreateDirectory($drafts) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $drafts 'brief.md'), "draft`n", $utf8)
+    $packagedDrafts = [IO.Path]::GetFullPath((Join-Path $packaged '..\..\Temp\claudecx'))
+    [IO.Directory]::CreateDirectory($packagedDrafts) | Out-Null
+    $codexHome = Join-Path $sandbox 'codex'
+    [IO.Directory]::CreateDirectory((Join-Path $codexHome 'claudecx-backups\skill-1')) | Out-Null
+    $claudeDir = Join-Path $sandbox 'claude-config'
+    [IO.Directory]::CreateDirectory($claudeDir) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $claudeDir 'settings.json'), '{}', $utf8)
+    [IO.File]::WriteAllText((Join-Path $claudeDir 'settings.json.claudecx-backup-20260101'), '{"old":true}', $utf8)
+    $dataContext = New-ClaudeCXCenterContext -Token $token -AssetRoot $assetRoot -Port 54321 -SkillRoot $skillRoot -LocalAppData $local
+
+    $data = (Invoke-Center -Context $dataContext -Target '/api/data' -Token $token).Json
+    $byId = @{}
+    foreach ($item in $data.items) { $byId[$item.id] = $item }
+    Assert-True ((@($data.items | ForEach-Object { $_.id }) -join ',') -ceq 'run-logs,drafts,settings,skill-backups,claude-backups,app') 'the inventory lists every kind of ClaudeCX data'
+    Assert-True (@($byId['run-logs'].paths).Count -eq 2 -and @($byId['run-logs'].paths | Where-Object { $_ -notlike '*\CodexClaude' }).Count -eq 0) 'run logs cover the standard and the packaged-app folder, and nothing else'
+    Assert-True (@($byId['drafts'].paths) -contains $drafts -and @($byId['drafts'].paths) -contains $packagedDrafts) 'brief drafts are found in both temporary folders'
+    Assert-True ($byId['skill-backups'].exists -and $byId['claude-backups'].exists -and @($byId['claude-backups'].paths).Count -eq 1) 'old versions and Claude settings backups are found'
+    Assert-True ($byId['run-logs'].default -and -not $byId['app'].default -and -not $byId['claude-backups'].default) 'only low-risk items are preselected'
+    Assert-True ($data.run_active -eq $true) 'the inventory reports the run in progress'
+
+    $wipeBody = '{"items":["run-logs","drafts","skill-backups","claude-backups","settings"],"confirm":"DELETE"}'
+    Assert-True ((Invoke-Center -Context $dataContext -Method POST -Target '/api/data/wipe' -Token $token -Body $wipeBody).Status -eq 409) 'nothing is wiped while a run is in progress'
+    Assert-True (Test-Path -LiteralPath $standard) 'the refused wipe deleted nothing'
+    $sleeper.Kill($true)
+    $null = $sleeper.WaitForExit(10000)
+    Assert-True ((Invoke-Center -Context $dataContext -Method POST -Target '/api/data/wipe' -Token $token -Body '{"items":["run-logs"],"confirm":"delete"}').Status -eq 422) 'the wipe needs the exact confirmation word'
+    Assert-True ((Invoke-Center -Context $dataContext -Method POST -Target '/api/data/wipe' -Token $token -Body '{"items":["everything"],"confirm":"DELETE"}').Status -eq 422) 'unknown items are refused'
+    Assert-True ((Invoke-Center -Context $dataContext -Method POST -Target '/api/data/wipe' -Token $token -Body '{"items":[],"confirm":"DELETE"}').Status -eq 422) 'an empty selection is refused'
+    Assert-True ((Invoke-Center -Context $dataContext -Method POST -Target '/api/data/wipe' -Token $token -Body $wipeBody -Headers @{ origin = 'http://evil.example' }).Status -eq 403) 'a wipe from another origin is refused'
+
+    $outsideFile = Join-Path $local 'keep-me.txt'
+    [IO.File]::WriteAllText($outsideFile, 'unrelated', $utf8)
+    $wipe = Invoke-Center -Context $dataContext -Method POST -Target '/api/data/wipe' -Token $token -Body $wipeBody
+    Assert-True ($wipe.Status -eq 200 -and @($wipe.Json.results).Count -eq 5 -and @($wipe.Json.results | Where-Object { @($_.errors).Count -gt 0 }).Count -eq 0) "the confirmed wipe succeeds ($($wipe.Text))"
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $local 'CodexClaude')) -and -not (Test-Path -LiteralPath (Split-Path -Parent $packaged))) 'run logs are gone from both folders'
+    Assert-True (-not (Test-Path -LiteralPath $drafts) -and -not (Test-Path -LiteralPath $packagedDrafts)) 'brief drafts are gone'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $codexHome 'claudecx-backups')) -and -not (Test-Path -LiteralPath (Join-Path $claudeDir 'settings.json.claudecx-backup-20260101'))) 'backups are gone'
+    Assert-True (-not (Test-Path -LiteralPath (Get-ClaudeCXSettingsPath))) 'settings are gone'
+    Assert-True ((Test-Path -LiteralPath $outsideFile) -and (Test-Path -LiteralPath (Join-Path $claudeDir 'settings.json')) -and (Test-Path -LiteralPath (Join-Path $local 'Packages\Unrelated_app\LocalCache'))) 'files ClaudeCX did not create are kept'
+    Assert-True (-not $dataContext.UninstallRequested) 'a data wipe without the app item does not uninstall'
+    $after = (Invoke-Center -Context $dataContext -Target '/api/data' -Token $token).Json
+    Assert-True (@($after.items | Where-Object { $_.id -ne 'app' -and $_.exists }).Count -eq 0) 'the inventory is empty after the wipe'
+
+    $appWipe = Invoke-Center -Context $dataContext -Method POST -Target '/api/data/wipe' -Token $token -Body '{"items":["app"],"confirm":"DELETE"}'
+    Assert-True ($appWipe.Status -eq 200 -and $appWipe.Json.uninstalling -eq $true -and $dataContext.UninstallRequested -and $dataContext.QuitRequested) 'choosing the app asks the server to uninstall after it stops'
+    Assert-True (Test-Path -LiteralPath (Join-Path $skillRoot 'SKILL.md')) 'the request itself removes nothing yet'
+
+    # Uninstall removes only a ClaudeCX skill inside a skills folder, plus shortcuts and the home.
+    $fakeSkill = Join-Path $codexHome 'skills\claudecx'
+    [IO.Directory]::CreateDirectory((Join-Path $fakeSkill 'scripts')) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $fakeSkill 'SKILL.md'), "---`nname: claudecx`ndescription: x`n---`n", $utf8)
+    $programs = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+    [IO.Directory]::CreateDirectory($programs) | Out-Null
+    $shell = New-Object -ComObject WScript.Shell
+    $link = $shell.CreateShortcut((Join-Path $programs 'ClaudeCX.lnk'))
+    $link.TargetPath = $pwshPath
+    $link.Arguments = '-File "' + (Join-Path $fakeSkill 'scripts\start-control-center.ps1') + '"'
+    $link.Save()
+    $other = $shell.CreateShortcut((Join-Path $programs 'Other.lnk'))
+    $other.TargetPath = $pwshPath
+    $other.Save()
+    [void][Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
+    [IO.Directory]::CreateDirectory($home_) | Out-Null
+    $notSkill = Join-Path $sandbox 'elsewhere\claudecx'
+    [IO.Directory]::CreateDirectory($notSkill) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $notSkill 'SKILL.md'), "---`nname: claudecx`n---`n", $utf8)
+    $null = Remove-ClaudeCXInstall -SkillRoot $notSkill
+    Assert-True (Test-Path -LiteralPath $notSkill) 'a ClaudeCX folder outside a skills folder is never deleted'
+    $removedPaths = @(Remove-ClaudeCXInstall -SkillRoot $fakeSkill)
+    Assert-True (-not (Test-Path -LiteralPath $fakeSkill) -and -not (Test-Path -LiteralPath (Join-Path $programs 'ClaudeCX.lnk')) -and -not (Test-Path -LiteralPath $home_)) "uninstall removes the skill, its shortcut, and the ClaudeCX home ($($removedPaths -join ', '))"
+    Assert-True (Test-Path -LiteralPath (Join-Path $programs 'Other.lnk')) 'other shortcuts are kept'
+    [Environment]::SetEnvironmentVariable('CLAUDECX_HOME', $home_)
 
     # --- The real server, started and stopped by the launcher ---
     Write-Host '[control center server]'

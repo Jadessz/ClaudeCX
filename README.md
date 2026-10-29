@@ -273,7 +273,7 @@ Open **ClaudeCX** from the Start menu to get the **control center**: one local p
 - **Live:** the run in progress, with everything described below and the **Stop run** button. With no run going it says so and shows your last run. When a run starts, the page switches to it by itself, and if the page is not open, ClaudeCX opens it for you (you can turn that off in Settings).
 - **History:** every run on this computer, newest first, with its request, project, status, duration, and cost, and a filter box. Open any run to see its prompt journey, work log, report, and the changes it made (saved when the run ended, so later edits to your project do not get in the way). It finds runs from the Codex desktop app's hidden log folder too.
 - **Settings:** your budget, turn, and time limits, the Claude model, the live view, protected paths, and log clean-up. See [Settings and limits](#7-settings-and-limits).
-- **Health:** checks Git, Claude Code, your Claude sign-in, your settings file, and the installed skill, with a fix for anything wrong; shows how much space run logs use in each folder; and can delete old finished runs.
+- **Health:** checks Git, Claude Code, your Claude sign-in, your settings file, and the installed skill, with a fix for anything wrong; shows how much space run logs use in each folder; can delete old finished runs; and lists **everything ClaudeCX created** on your computer, so you can delete any of it, or all of it including ClaudeCX itself, with one button (see [Deleting everything](#deleting-everything-claudecx-created)).
 
 The control center runs quietly in the background (a hidden PowerShell process) until you stop it from the Health tab or sign out. While it runs, new runs appear in it instead of opening a separate dashboard. You can also start, check, or stop it from a terminal:
 
@@ -508,7 +508,9 @@ Every run is logged outside your repositories:
 
 > **Using the Codex desktop app?** It is a packaged Microsoft Store app, and Windows quietly redirects its `%LOCALAPPDATA%` writes into the app's own folder. The logs then live under `%LOCALAPPDATA%\Packages\OpenAI.Codex_<id>\LocalCache\Local\CodexClaude\handoffs\`, even though the paths the bridge prints say `%LOCALAPPDATA%\CodexClaude\handoffs`. Codex sees the printed paths. The control center's History and Health tabs read both places for you. Runs started from the Codex CLI or from your own terminal use the normal path. Your settings are kept in `%USERPROFILE%\.claudecx`, which Windows does not redirect, so the Codex app and your terminal read the same file.
 
-Logs are kept until you delete them, unless you set **Delete finished run logs after** in Settings: then finished runs older than that are removed whenever a new run starts. They contain your briefs and Claude's output, so clean them up from the Health tab (or delete old session folders) when you no longer need them. A session whose runs you delete can no longer be resumed.
+Logs are kept until you delete them, unless you set **Delete finished run logs after** in Settings: then finished runs older than that are removed whenever a new run starts. They contain your briefs and Claude's output, so clean them up from the Health tab when you no longer need them. A session whose runs you delete can no longer be resumed.
+
+> **Why is there a folder under `Packages\...`?** Windows gives every Microsoft Store (packaged) app its own private copy of `%LOCALAPPDATA%`. When the Codex desktop app runs the bridge, the bridge asks for `%LOCALAPPDATA%\CodexClaude`, and Windows quietly puts it in `%LOCALAPPDATA%\Packages\OpenAI.Codex_<id>\LocalCache\Local\CodexClaude` instead. The same happens if another packaged app (for example the Claude desktop app) runs a ClaudeCX script. These folders are ordinary folders you own: the control center lists and deletes them like the standard one, and uninstalling Codex removes its package folder too.
 
 ## 10. What is protected, and what is not
 
@@ -554,14 +556,30 @@ pwsh -NoProfile -File .\uninstall.ps1 -Yes              # move the skill to <Cod
 pwsh -NoProfile -File .\uninstall.ps1 -Yes -Permanent   # delete the skill outright
 ```
 
-Uninstall removes only `<CodexHome>\skills\claudecx`, and only if its `SKILL.md` names the `claudecx` skill. It also stops the control center and removes its Start menu and sign-in shortcuts. Without `-Yes` it asks for confirmation, and in a non-interactive session it refuses. It does not touch run logs, your ClaudeCX settings, Claude settings, or other skills. To restore an uninstall backup, move the folder back to `<CodexHome>\skills\claudecx`. Both scripts accept `-CodexHome`.
+Uninstall removes only `<CodexHome>\skills\claudecx`, and only if its `SKILL.md` names the `claudecx` skill. It also stops the control center and removes its Start menu and sign-in shortcuts. Without `-Yes` it asks for confirmation, and in a non-interactive session it refuses. It does not touch run logs, your ClaudeCX settings, Claude settings, or other skills unless you add `-RemoveData` (below). To restore an uninstall backup, move the folder back to `<CodexHome>\skills\claudecx`. Both scripts accept `-CodexHome`.
 
-To remove everything ClaudeCX ever created, also delete:
+### Deleting everything ClaudeCX created
 
-- the run logs: `%LOCALAPPDATA%\CodexClaude` (and, for the Codex desktop app, `%LOCALAPPDATA%\Packages\OpenAI.Codex_<id>\LocalCache\Local\CodexClaude`);
-- your ClaudeCX settings: `%USERPROFILE%\.claudecx`;
-- old skill backups: `<CodexHome>\claudecx-backups`;
-- if you used `-DisableClaudeAttribution`: restore `settings.json.claudecx-backup-<timestamp>` next to your Claude `settings.json` if you want the old attribution back.
+ClaudeCX keeps track of everything it creates. Open the control center's **Health** tab and scroll to **Your ClaudeCX data**. Each kind of data is listed with its size and its exact folders:
+
+| Item | What it is | Where |
+| --- | --- | --- |
+| Run logs | briefs, requests, Claude's output, reports, saved diffs | `%LOCALAPPDATA%\CodexClaude`, and the redirected copy for each packaged app (`%LOCALAPPDATA%\Packages\<app>\LocalCache\Local\CodexClaude`) |
+| Brief drafts | the files Codex writes before a run | `%TEMP%\claudecx` (and a packaged app's own temp folder) |
+| Your ClaudeCX settings | limits, model, protected paths | `%USERPROFILE%\.claudecx\settings.json` |
+| Old ClaudeCX versions | copies kept by `install.ps1 -Force` and `uninstall.ps1` | `<CodexHome>\claudecx-backups` |
+| Claude settings backups | your Claude `settings.json` from before `-DisableClaudeAttribution` | `settings.json.claudecx-backup-*` next to it |
+| ClaudeCX itself | the skill, the Start menu and sign-in shortcuts, and `%USERPROFILE%\.claudecx` | `<CodexHome>\skills\claudecx` |
+
+Tick what you want gone and choose **Delete selected…**. A dialog lists exactly what will be deleted, with a warning for each item (for example, deleted runs can no longer be resumed), and you type `DELETE` to confirm. Deletion is permanent: nothing goes to the Recycle Bin. It is refused while a run is in progress, it never touches your projects, and it only ever deletes these fixed locations. If you include **ClaudeCX itself**, the control center removes itself and closes.
+
+From a terminal, the same full clean-up is:
+
+```powershell
+pwsh -NoProfile -File .\uninstall.ps1 -RemoveData
+```
+
+It lists what it will delete and asks you to confirm (add `-Yes` to skip the question).
 
 ## 12. Troubleshooting
 
@@ -588,6 +606,7 @@ To remove everything ClaudeCX ever created, also delete:
 | **"This repository's .claudecx.json has problems"** | The project's committed `.claudecx.json` has a bad value. Fix it, commit, and run again. The bridge reads the committed version, so uncommitted edits to it do not count. |
 | **"Claude changed protected paths"** | Claude edited a file you protected. The run is marked failed and the edits stay in your project. Ask Codex to resume the session and undo them, or revert them yourself (`git restore <path>`). |
 | **The control center page says "No access token"** | You reloaded the page or opened it by hand. Open **ClaudeCX** from the Start menu again. Runs are not affected. |
+| **There is a `CodexClaude` folder under `Packages\Claude_...` or another app** | A packaged app ran a ClaudeCX script, and Windows redirected the folder into that app's private storage (see [Logs](#9-logs-and-where-to-find-them)). The Health tab lists it under **Your ClaudeCX data**, where you can delete it. |
 | **I can't find the logs** | Open the control center's History tab, which lists runs from every log folder. If you use the Codex desktop app, the files are in the app's package folder (see [Logs](#9-logs-and-where-to-find-them)). |
 | **"malformed stream-json line"** | Claude Code printed something unexpected, and the bridge stopped it. Check the last line of `claude-events.jsonl` and `claude-stderr.txt`, and update Claude Code. |
 | **Hooks or MCP servers in my project** | Safe mode turns off project and user hooks, plugins, skills, agents, and MCP servers. The bridge settings also set `disableAllHooks` and block `mcp__*`, and an empty strict MCP configuration is loaded. Your project's own build and test scripts can still run code, so read them first. |

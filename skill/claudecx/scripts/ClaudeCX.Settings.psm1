@@ -534,6 +534,219 @@ function Remove-ClaudeCXOldRuns {
     return [pscustomobject]@{ RemovedRuns = $removed; FreedBytes = $freed }
 }
 
+function Get-ClaudeCXShortcutPaths {
+    # Start menu and sign-in (Startup) shortcuts for the control center, under %APPDATA%.
+    if (-not $env:APPDATA) {
+        throw 'APPDATA is unavailable; cannot place the Start menu shortcut. Use -NoShortcut.'
+    }
+    $programs = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+    return [pscustomobject]@{
+        StartMenu = Join-Path $programs 'ClaudeCX.lnk'
+        Startup = Join-Path $programs 'Startup\ClaudeCX control center.lnk'
+    }
+}
+
+function Remove-ClaudeCXShortcutFiles {
+    # Removes only shortcuts that point at a ClaudeCX launcher. Returns the paths removed.
+    $removed = [Collections.Generic.List[string]]::new()
+    $paths = Get-ClaudeCXShortcutPaths
+    $shell = New-Object -ComObject WScript.Shell
+    try {
+        foreach ($path in @($paths.StartMenu, $paths.Startup)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+            $shortcut = $shell.CreateShortcut($path)
+            if ([string]$shortcut.Arguments -like '*start-control-center.ps1*') {
+                Remove-Item -LiteralPath $path -Force
+                $removed.Add($path)
+            }
+        }
+    }
+    finally {
+        [void][Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
+    }
+    return $removed.ToArray()
+}
+
+function Test-ClaudeCXRunActive {
+    # $true when any log folder holds a lock whose bridge process is still alive.
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Roots)
+
+    foreach ($root in $Roots) {
+        if (-not [IO.Directory]::Exists($root.Path)) { continue }
+        foreach ($lockPath in [IO.Directory]::EnumerateFiles($root.Path, 'active.lock', [IO.SearchOption]::AllDirectories)) {
+            try {
+                $lock = [IO.File]::ReadAllText($lockPath) | ConvertFrom-Json
+                if ($null -ne (Get-Process -Id ([int]$lock.pid) -ErrorAction SilentlyContinue)) { return $true }
+            }
+            catch { }
+        }
+    }
+    return $false
+}
+
+function Get-ClaudeCXCodexHomeFromSkill {
+    # <CodexHome>\skills\claudecx -> <CodexHome>; otherwise CODEX_HOME or %USERPROFILE%\.codex.
+    param([string]$SkillRoot)
+
+    if ($SkillRoot) {
+        $skills = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($SkillRoot))
+        if ([IO.Path]::GetFileName($skills) -ieq 'skills') { return [IO.Path]::GetDirectoryName($skills) }
+    }
+    if ($env:CODEX_HOME) { return [IO.Path]::GetFullPath($env:CODEX_HOME) }
+    if ($env:USERPROFILE) { return Join-Path $env:USERPROFILE '.codex' }
+    return $null
+}
+
+function Get-ClaudeCXDataInventory {
+    # Everything ClaudeCX itself creates on this computer, grouped so a user can see and wipe it.
+    # Each item lists exact paths; nothing outside these fixed locations is ever included.
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Roots,
+        [string]$SkillRoot
+    )
+
+    $measure = {
+        param([string[]]$Paths)
+        $bytes = [long]0
+        foreach ($path in $Paths) {
+            if ([IO.Directory]::Exists($path)) { $bytes += Get-ClaudeCXDirectorySize -Path $path }
+            elseif ([IO.File]::Exists($path)) { $bytes += ([IO.FileInfo]::new($path)).Length }
+        }
+        return $bytes
+    }
+    $items = [Collections.Generic.List[object]]::new()
+
+    $logFolders = @($Roots | ForEach-Object { [IO.Path]::GetDirectoryName($_.Path) } |
+        Where-Object { $_ -and [IO.Path]::GetFileName($_) -ieq 'CodexClaude' -and [IO.Directory]::Exists($_) } | Select-Object -Unique)
+    $items.Add([ordered]@{
+            id = 'run-logs'; label = 'Run logs'; default = $true
+            description = 'Briefs, your requests, Claude''s raw output, reports, and saved diffs for every run, in every log folder (including the copies Windows redirected for packaged apps).'
+            warning = 'Past runs disappear from History, and their sessions can no longer be resumed.'
+            paths = $logFolders
+        })
+
+    $drafts = [Collections.Generic.List[string]]::new()
+    $drafts.Add((Join-Path ([IO.Path]::GetTempPath()) 'claudecx'))
+    foreach ($root in $Roots | Where-Object { $_.Kind -eq 'packaged' }) {
+        $drafts.Add([IO.Path]::GetFullPath((Join-Path $root.Path '..\..\Temp\claudecx')))
+    }
+    $items.Add([ordered]@{
+            id = 'drafts'; label = 'Brief drafts'; default = $true
+            description = 'The brief and request files Codex writes in a temporary folder before handing them to the bridge.'
+            warning = $null
+            paths = @($drafts | Where-Object { [IO.Directory]::Exists($_) } | Select-Object -Unique)
+        })
+
+    $settingsPath = Get-ClaudeCXSettingsPath
+    $items.Add([ordered]@{
+            id = 'settings'; label = 'Your ClaudeCX settings'; default = $false
+            description = 'Limits, model, display choices, and protected paths.'
+            warning = 'Every setting goes back to its default.'
+            paths = @(@($settingsPath) | Where-Object { [IO.File]::Exists($_) })
+        })
+
+    $codexHome = Get-ClaudeCXCodexHomeFromSkill -SkillRoot $SkillRoot
+    $backups = if ($codexHome) { Join-Path $codexHome 'claudecx-backups' } else { $null }
+    $items.Add([ordered]@{
+            id = 'skill-backups'; label = 'Old ClaudeCX versions'; default = $true
+            description = 'Copies of earlier installs that the installer and uninstaller keep so you can roll back.'
+            warning = 'You can no longer roll back to an earlier version.'
+            paths = @(@($backups) | Where-Object { $_ -and [IO.Directory]::Exists($_) })
+        })
+
+    $claudeDir = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } elseif ($env:USERPROFILE) { Join-Path $env:USERPROFILE '.claude' } else { $null }
+    $claudeBackups = @(if ($claudeDir -and [IO.Directory]::Exists($claudeDir)) {
+            [IO.Directory]::EnumerateFiles($claudeDir, 'settings.json.claudecx-backup-*')
+        })
+    $items.Add([ordered]@{
+            id = 'claude-backups'; label = 'Claude settings backups'; default = $false
+            description = 'Copies of your Claude Code settings.json saved before -DisableClaudeAttribution changed it.'
+            warning = 'These are the only copies of your Claude settings from before that change.'
+            paths = $claudeBackups
+        })
+
+    $shortcutPaths = @()
+    try { $shortcutPaths = @((Get-ClaudeCXShortcutPaths).PSObject.Properties.Value | Where-Object { [IO.File]::Exists($_) }) } catch { }
+    $app = @(@($SkillRoot) | Where-Object { $_ -and [IO.Directory]::Exists($_) }) + $shortcutPaths + @(@(Get-ClaudeCXHome) | Where-Object { [IO.Directory]::Exists($_) })
+    $items.Add([ordered]@{
+            id = 'app'; label = 'ClaudeCX itself'; default = $false
+            description = 'Uninstalls the skill from Codex, removes the Start menu and sign-in shortcuts, deletes the ClaudeCX folder in your profile, and stops the control center.'
+            warning = '$claudecx stops working until you install it again from the repository.'
+            paths = $app
+        })
+
+    foreach ($item in $items) {
+        $item['paths'] = @($item['paths'])
+        $item['bytes'] = & $measure $item['paths']
+        $item['exists'] = ($item['paths'].Count -gt 0)
+    }
+    return $items.ToArray()
+}
+
+function Remove-ClaudeCXPathSafely {
+    # Deletes one inventory path. Symbolic links and junctions are removed as links, never followed.
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if ([IO.File]::Exists($Path)) { [IO.File]::Delete($Path); return }
+    if (-not [IO.Directory]::Exists($Path)) { return }
+    $info = [IO.DirectoryInfo]::new($Path)
+    if ($info.Attributes -band [IO.FileAttributes]::ReparsePoint) { $info.Delete(); return }
+    foreach ($child in $info.EnumerateFileSystemInfos()) {
+        if ($child -is [IO.DirectoryInfo]) { Remove-ClaudeCXPathSafely -Path $child.FullName }
+        else {
+            $child.Attributes = [IO.FileAttributes]::Normal
+            $child.Delete()
+        }
+    }
+    $info.Delete()
+}
+
+function Remove-ClaudeCXData {
+    # Deletes the chosen inventory items. 'app' is not handled here: the caller uninstalls last.
+    # Returns one result per item with what was removed and any error.
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$Ids,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Roots,
+        [string]$SkillRoot
+    )
+
+    $inventory = @(Get-ClaudeCXDataInventory -Roots $Roots -SkillRoot $SkillRoot)
+    $results = [Collections.Generic.List[object]]::new()
+    foreach ($item in $inventory) {
+        if ($Ids -cnotcontains $item.id -or $item.id -eq 'app') { continue }
+        $errors = [Collections.Generic.List[string]]::new()
+        $removed = 0
+        foreach ($path in $item.paths) {
+            try { Remove-ClaudeCXPathSafely -Path $path; $removed++ } catch { $errors.Add("${path}: $($_.Exception.Message)") }
+        }
+        $results.Add([ordered]@{ id = $item.id; label = $item.label; removed = $removed; freed_bytes = $item.bytes; errors = $errors.ToArray() })
+    }
+    return $results.ToArray()
+}
+
+function Remove-ClaudeCXInstall {
+    # Uninstalls permanently: shortcuts, the installed skill folder (only if it is a ClaudeCX skill
+    # inside a 'skills' folder), and the ClaudeCX home. Returns the paths removed.
+    param([Parameter(Mandatory = $true)][string]$SkillRoot)
+
+    $removed = [Collections.Generic.List[string]]::new()
+    try { foreach ($path in @(Remove-ClaudeCXShortcutFiles)) { $removed.Add($path) } } catch { }
+    $full = [IO.Path]::GetFullPath($SkillRoot)
+    $skillFile = Join-Path $full 'SKILL.md'
+    $isSkill = [IO.File]::Exists($skillFile) -and ([IO.File]::ReadAllText($skillFile) -match '(?m)^name:\s*claudecx\s*$') -and
+        ([IO.Path]::GetFileName([IO.Path]::GetDirectoryName($full)) -ieq 'skills')
+    if ($isSkill) {
+        Remove-ClaudeCXPathSafely -Path $full
+        $removed.Add($full)
+    }
+    $home_ = Get-ClaudeCXHome
+    if ([IO.Directory]::Exists($home_)) {
+        Remove-ClaudeCXPathSafely -Path $home_
+        $removed.Add($home_)
+    }
+    return $removed.ToArray()
+}
+
 function Get-ClaudeCXControlCenterPaths {
     $home_ = Get-ClaudeCXHome
     # One control center per ClaudeCX home; the mutex name keeps separate homes (tests) apart.
@@ -566,6 +779,14 @@ function Get-ClaudeCXControlCenter {
 }
 
 Export-ModuleMember -Function @(
+    'Get-ClaudeCXShortcutPaths',
+    'Remove-ClaudeCXShortcutFiles',
+    'Test-ClaudeCXRunActive',
+    'Get-ClaudeCXCodexHomeFromSkill',
+    'Get-ClaudeCXDataInventory',
+    'Remove-ClaudeCXPathSafely',
+    'Remove-ClaudeCXData',
+    'Remove-ClaudeCXInstall',
     'Get-ClaudeCXControlCenterPaths',
     'Get-ClaudeCXControlCenter',
     'Get-ClaudeCXSettingsFields',

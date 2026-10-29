@@ -12,6 +12,7 @@ import { ConnectionBadge, ConnectionNotice, RunConsole } from './App.jsx';
 import { StatusIcon } from './Flow.jsx';
 import { EmptyState } from './views.jsx';
 import { NumberField, SearchField, Select, Switch, TagInput } from './Controls.jsx';
+import { DataCard } from './Data.jsx';
 
 const CENTER_POLL_MS = 2000;
 const VIEWS = [
@@ -86,6 +87,7 @@ export function ControlCenter() {
   const [liveRun, setLiveRun] = useState(initialRun());
   const [historyRun, setHistoryRun] = useState('');
   const [stopped, setStopped] = useState(false);
+  const [removed, setRemoved] = useState(false);
   const viewRefs = useRef({});
 
   const loadOverview = useCallback(async () => {
@@ -180,7 +182,7 @@ export function ControlCenter() {
 
       <main id="main" className="layout center-layout" tabIndex={-1} role="tabpanel" aria-labelledby={'view-' + view}>
         {blocked && <ConnectionNotice connection={connection} center />}
-        {stopped && (
+        {stopped && !removed && (
           <div className="banner" role="status">
             <Power aria-hidden="true" size={18} />
             <p>The control center is stopped. Runs still work and open their own dashboard. Open ClaudeCX from the Start menu to start it again.</p>
@@ -192,18 +194,28 @@ export function ControlCenter() {
             <p>Your settings file has problems, so new runs will refuse to start: {overview.settings_errors.join(' ')} Fix them in Settings.</p>
           </div>
         )}
-        {view === 'live' && (
+        {!removed && view === 'live' && (
           liveRun
             ? <RunRoute runId={liveRun} onBack={() => { followed.current = ''; setLiveRun(''); }} backLabel="Overview" />
             : <LiveIdle overview={overview} onOpen={(id) => { setHistoryRun(id); setView('history'); }} />
         )}
-        {view === 'history' && (
+        {!removed && view === 'history' && (
           historyRun
             ? <RunRoute runId={historyRun} onBack={() => setHistoryRun('')} backLabel="All runs" />
             : <HistoryView onOpen={setHistoryRun} />
         )}
-        {view === 'settings' && <SettingsView />}
-        {view === 'health' && <HealthView onStopped={() => setStopped(true)} stopped={stopped} />}
+        {!removed && view === 'settings' && <SettingsView />}
+        {removed
+          ? (
+            <section className="idle-card" aria-labelledby="removed-title">
+              <span className="idle-icon" aria-hidden="true"><CircleCheck size={22} /></span>
+              <div>
+                <h1 id="removed-title" className="center-title">ClaudeCX was removed</h1>
+                <p className="center-lede">The skill, its shortcuts, and the data you chose are deleted, and the control center has stopped. Restart Codex so it forgets the skill. To use ClaudeCX again, run install.ps1 from the repository. You can close this tab.</p>
+              </div>
+            </section>
+          )
+          : view === 'health' && <HealthView onStopped={() => setStopped(true)} onRemoved={() => { setRemoved(true); setStopped(true); }} stopped={stopped} />}
       </main>
 
       <footer className="footer">
@@ -507,7 +519,7 @@ function SettingsView() {
   );
 }
 
-function HealthView({ onStopped, stopped }) {
+function HealthView({ onStopped, onRemoved, stopped }) {
   const [state, setState] = useState({ status: 'loading', data: null });
   const [days, setDays] = useState('30');
   const [prune, setPrune] = useState({ step: 'idle', text: '' });
@@ -626,6 +638,7 @@ function HealthView({ onStopped, stopped }) {
           </section>
         </>
       )}
+      <DataCard onRemoved={onRemoved} onChanged={load} disabled={stopped} />
       <section className="card" aria-labelledby="center-title">
         <header className="card-head">
           <span className="card-icon" aria-hidden="true"><Server size={16} /></span>

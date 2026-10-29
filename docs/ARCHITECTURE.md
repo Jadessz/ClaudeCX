@@ -75,6 +75,8 @@ State is kept under `%LOCALAPPDATA%\CodexClaude\handoffs`, never inside a reposi
                             the limits used), changes.json (status and diff at the end), dashboard-endpoint.json, stop-request.json (only after Stop run)
 ```
 
+Codex writes its brief and request drafts under `%TEMP%\claudecx\`. Everything listed here, plus `<CodexHome>\claudecx-backups` and the Claude settings backups from `-DisableClaudeAttribution`, is what the control center's data wipe and `uninstall.ps1 -RemoveData` can delete; nothing else is ever created by ClaudeCX. The setup check (`doctor.ps1`) removes any folder it creates while testing that the log folder is writable.
+
 The user's own files live in the ClaudeCX home, `%USERPROFILE%\.claudecx` (or `CLAUDECX_HOME`), which Windows does not redirect for packaged apps: `settings.json`, and while the control center runs, `control-center.json` and `control-center.token`.
 
 When the bridge is started from the packaged Codex desktop app, Windows redirects `%LOCALAPPDATA%` writes to `%LOCALAPPDATA%\Packages\OpenAI.Codex_<id>\LocalCache\Local`. Processes inside the package see the normal path. Processes outside it, such as a user's own shell, find the state only under the package folder. The control center reads both locations.

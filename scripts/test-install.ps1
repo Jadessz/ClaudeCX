@@ -88,7 +88,7 @@ function Invoke-Script {
         [string]$CodexHomeEnv
     )
 
-    $names = @('USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CLAUDECX_HOME')
+    $names = @('USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CLAUDECX_HOME', 'TEMP', 'TMP')
     $saved = @{}
     foreach ($name in $names) { $saved[$name] = [Environment]::GetEnvironmentVariable($name) }
     try {
@@ -97,6 +97,10 @@ function Invoke-Script {
         [Environment]::SetEnvironmentVariable('LOCALAPPDATA', (Join-Path $ProfileRoot 'AppData\Local'))
         [Environment]::SetEnvironmentVariable('APPDATA', (Join-Path $ProfileRoot 'AppData\Roaming'))
         [Environment]::SetEnvironmentVariable('CLAUDECX_HOME', $null)
+        $tempRoot = Join-Path $ProfileRoot 'AppData\Local\Temp'
+        [IO.Directory]::CreateDirectory($tempRoot) | Out-Null
+        [Environment]::SetEnvironmentVariable('TEMP', $tempRoot)
+        [Environment]::SetEnvironmentVariable('TMP', $tempRoot)
         [Environment]::SetEnvironmentVariable('CLAUDE_CONFIG_DIR', (Join-Path $ProfileRoot '.claude'))
         [Environment]::SetEnvironmentVariable('CODEX_HOME', $(if ($CodexHomeEnv) { $CodexHomeEnv } else { $null }))
         # The installer's setup checks would call the real claude; they have their own tests in test-doctor.ps1.
@@ -334,6 +338,33 @@ try {
     Assert-True ($result.ExitCode -eq 0) 'permanent uninstall exits 0'
     Assert-True (-not (Test-Path -LiteralPath $destination)) 'skill permanently removed'
     Assert-True (@(Get-BackupDirectories -CodexHome $case.CodexHome -Prefix 'uninstalled').Count -eq 1) 'permanent uninstall creates no backup'
+
+    # --- Uninstall -RemoveData deletes everything ClaudeCX created, and nothing else ---
+    $case = New-Case 'remove-data'
+    $result = Invoke-Script -ScriptPath $installScript -Arguments @('-CodexHome', $case.CodexHome) -ProfileRoot $case.ProfileRoot
+    Assert-True ($result.ExitCode -eq 0) 'install for the data removal test exits 0'
+    $local = Join-Path $case.ProfileRoot 'AppData\Local'
+    $logs = Join-Path $local 'CodexClaude\handoffs\aaaaaaaaaaaaaaaaaaaaaaaa'
+    $appLogs = Join-Path $local 'Packages\OpenAI.Codex_test\LocalCache\Local\CodexClaude\handoffs\bbbbbbbbbbbbbbbbbbbbbbbb'
+    foreach ($folder in @($logs, $appLogs, (Join-Path $local 'Temp\claudecx'), (Join-Path $case.ProfileRoot '.claudecx'), (Join-Path $case.CodexHome 'claudecx-backups\skill-1'))) {
+        [IO.Directory]::CreateDirectory($folder) | Out-Null
+        Write-ClaudeCXUtf8File -Path (Join-Path $folder 'file.txt') -Content 'x'
+    }
+    $claudeDir = Join-Path $case.ProfileRoot '.claude'
+    [IO.Directory]::CreateDirectory($claudeDir) | Out-Null
+    Write-ClaudeCXUtf8File -Path (Join-Path $claudeDir 'settings.json') -Content '{"model":"opus"}'
+    Write-ClaudeCXUtf8File -Path (Join-Path $claudeDir 'settings.json.claudecx-backup-1') -Content '{}'
+    $keep = Join-Path $local 'keep.txt'
+    Write-ClaudeCXUtf8File -Path $keep -Content 'unrelated'
+    $result = Invoke-Script -ScriptPath $uninstallScript -Arguments @('-CodexHome', $case.CodexHome, '-RemoveData') -ProfileRoot $case.ProfileRoot
+    Assert-True ($result.ExitCode -ne 0 -and (Test-Path -LiteralPath $logs)) '-RemoveData without -Yes asks first and changes nothing'
+    $result = Invoke-Script -ScriptPath $uninstallScript -Arguments @('-CodexHome', $case.CodexHome, '-RemoveData', '-Yes') -ProfileRoot $case.ProfileRoot
+    Assert-True ($result.ExitCode -eq 0) "uninstall -RemoveData -Yes exits 0 ($($result.Text))"
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $case.CodexHome 'skills\claudecx')) -and -not (Test-Path -LiteralPath (Join-Path $case.CodexHome 'claudecx-backups'))) '-RemoveData deletes the skill and keeps no backup'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $local 'CodexClaude')) -and -not (Test-Path -LiteralPath (Join-Path $local 'Packages\OpenAI.Codex_test\LocalCache\Local\CodexClaude'))) '-RemoveData deletes run logs in every folder'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $local 'Temp\claudecx')) -and -not (Test-Path -LiteralPath (Join-Path $case.ProfileRoot '.claudecx'))) '-RemoveData deletes brief drafts and ClaudeCX settings'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $claudeDir 'settings.json.claudecx-backup-1')) -and (Test-Path -LiteralPath (Join-Path $claudeDir 'settings.json'))) '-RemoveData deletes Claude settings backups but keeps Claude settings'
+    Assert-True ((Test-Path -LiteralPath $keep) -and -not (Test-Path -LiteralPath (Join-Path $case.ProfileRoot 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\ClaudeCX.lnk'))) '-RemoveData keeps unrelated files and removes the shortcut'
 
     # --- Sign-in shortcut, and no shortcuts at all ---
     $case = New-Case 'start-at-login'

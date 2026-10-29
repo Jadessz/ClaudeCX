@@ -28,7 +28,7 @@ If the user asks you to change a setting ("raise the budget to 10 dollars", "use
 
 ## Prepare the brief
 
-Write a UTF-8 Markdown brief outside the repository. Include:
+Write a UTF-8 Markdown brief outside the repository, in a new folder under `%TEMP%\claudecx\` (for example `%TEMP%\claudecx\<yyyyMMdd-HHmmss>\brief.md`), so the user can find and delete every ClaudeCX file from the control center. Include:
 
 - objective and non-goals;
 - relevant architecture and repository conventions;
@@ -42,7 +42,7 @@ Do not paste secrets or sensitive `.env` content. Prefer paths and symbols over 
 
 ## Run Claude
 
-Before invoking, write the user's original request (their message to you, verbatim) to a separate UTF-8 file **outside the repository**, next to the brief, and pass it with `-OriginalPromptPath`. The dashboard can only show the original request when this parameter is supplied; without it the run still works and the dashboard says the request was not captured. Both files must be outside the repository and at most 1 MiB; the wrapper refuses inside-repository, missing, oversized, or invalid UTF-8 inputs before Claude starts.
+Before invoking, write the user's original request (their message to you, verbatim) to a separate UTF-8 file **outside the repository**, next to the brief (for example `request.md` in the same `%TEMP%\claudecx\` folder), and pass it with `-OriginalPromptPath`. The dashboard can only show the original request when this parameter is supplied; without it the run still works and the dashboard says the request was not captured. Both files must be outside the repository and at most 1 MiB; the wrapper refuses inside-repository, missing, oversized, or invalid UTF-8 inputs before Claude starts.
 
 Invoke `scripts/invoke-claude.ps1` with the repository root, the brief path, and the original-request path. Use the default `auto` permission mode. The wrapper must fail if auto mode is unavailable; never retry with a more permissive mode and never use `--dangerously-skip-permissions`.
 

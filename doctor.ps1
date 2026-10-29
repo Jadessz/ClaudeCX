@@ -224,10 +224,24 @@ else {
 $stateRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'CodexClaude\handoffs'
 if ($env:LOCALAPPDATA) { $stateRoot = Join-Path $env:LOCALAPPDATA 'CodexClaude\handoffs' }
 try {
+    # Probe without leaving anything behind: folders this check creates are removed again.
+    $created = [Collections.Generic.List[string]]::new()
+    $walk = $stateRoot
+    while ($walk -and -not [IO.Directory]::Exists($walk)) {
+        $created.Insert(0, $walk)
+        $walk = [IO.Path]::GetDirectoryName($walk)
+    }
     [IO.Directory]::CreateDirectory($stateRoot) | Out-Null
     $probe = Join-Path $stateRoot ".doctor-$([Guid]::NewGuid().ToString('N')).tmp"
-    [IO.File]::WriteAllText($probe, 'ok')
-    Remove-Item -LiteralPath $probe -Force
+    try {
+        [IO.File]::WriteAllText($probe, 'ok')
+        Remove-Item -LiteralPath $probe -Force
+    }
+    finally {
+        for ($index = $created.Count - 1; $index -ge 0; $index--) {
+            try { [IO.Directory]::Delete($created[$index], $false) } catch { }
+        }
+    }
     Add-Result log-folder ok "The bridge can write its run logs to $stateRoot"
 }
 catch {

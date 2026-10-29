@@ -352,6 +352,9 @@ Assert-True (-not ($centerText + $centerServer).Contains('HttpListener') -and -n
 Assert-True ($centerServer.Contains('[Environment]::SetEnvironmentVariable($tokenVariable, [NullString]::Value)')) 'control center removes the token from its environment'
 Assert-True ($centerText.Contains('Test-ClaudeCXDashboardToken -Expected $Context.Token') -and $centerText.Contains("'forbidden_origin'") -and $centerText.Contains("'unsupported_media_type'")) 'control center checks the token, the origin, and the content type'
 Assert-True ($centerText.Contains('Resolve-ClaudeCXRunId')) 'control center addresses runs only through validated ids'
+Assert-True ($centerText.Contains("`$script:WipeConfirmation = 'DELETE'") -and $centerText.Contains('Test-ClaudeCXRunActive -Roots $roots')) 'the data wipe needs a typed confirmation and refuses during a run'
+Assert-True ((Read-RepoText 'uninstall.ps1').Contains('[switch]$RemoveData')) 'uninstall.ps1 can remove all ClaudeCX data'
+Assert-True ((Read-RepoText 'README.md').Contains('Deleting everything ClaudeCX created')) 'README explains how to delete everything ClaudeCX created'
 $centerTest = & ([Environment]::ProcessPath) -NoProfile -NonInteractive -File (Join-Path $PSScriptRoot 'test-control-center.ps1') 2>&1
 $centerExit = $LASTEXITCODE
 if ($centerExit -ne 0) {
