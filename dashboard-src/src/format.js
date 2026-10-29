@@ -58,7 +58,7 @@ const SECTION_RULES = [
   { id: 'scope', label: 'Scope and non-goals', pattern: /\b(scope|non-goals?|out of scope)\b/i },
   { id: 'constraints', label: 'Constraints', pattern: /\b(constraints?|invariants?|rules|requirements|architecture)\b/i },
   { id: 'acceptance', label: 'Acceptance criteria', pattern: /\b(acceptance|done when|definition of done|success criteria)\b/i },
-  { id: 'tests', label: 'Tests and verification', pattern: /\b(tests?|testing|verification|verify|checks?)\b/i },
+  { id: 'tests', label: 'Tests and verification', pattern: /\b(tests?|testing|verification|verify|validation|validate|checks?)\b/i },
   { id: 'risks', label: 'Risks and edge cases', pattern: /\b(risks?|edge cases?|security|privacy)\b/i },
   { id: 'docs', label: 'Documentation', pattern: /\b(documentation|docs)\b/i }
 ];
@@ -83,10 +83,21 @@ export function outlineMarkdown(text) {
   return sections;
 }
 
+// A brief's sections are every heading except a lone `#` title. Briefs that use `#` for each
+// section (several level-1 headings) count all of them.
+function sectionHeadings(sections) {
+  const titles = sections.filter((section) => section.level === 1);
+  if (titles.length === 1 && sections.length > 1) {
+    return sections.filter((section) => section !== titles[0]);
+  }
+  return sections;
+}
+
 export function briefStructure(text) {
   const sections = outlineMarkdown(text);
+  const candidates = sectionHeadings(sections);
   const found = SECTION_RULES.map((rule) => {
-    const matches = sections.filter((section) => section.level > 1 && rule.pattern.test(section.title));
+    const matches = candidates.filter((section) => rule.pattern.test(section.title));
     return {
       id: rule.id,
       label: rule.label,

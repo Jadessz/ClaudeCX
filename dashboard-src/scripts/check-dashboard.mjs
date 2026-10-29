@@ -134,6 +134,19 @@ const purple = [...sourceCss.matchAll(/#([0-9a-f]{6})\b/gi)].map((match) => matc
 check(purple.length === 0, 'no purple/violet accent colours (' + purple.join(', ') + ')');
 check((sourceCss.match(/linear-gradient/g) || []).length <= 1, 'at most one subtle gradient');
 
+// --- Brief structure detection (behaviour) ---
+const { briefStructure } = await import(pathToFileURL(join(srcDir, 'format.js')).href);
+const present = (text) => new Set(briefStructure(text).found.filter((item) => item.present).map((item) => item.id));
+const topLevel = present('# Objective\nDo it.\n\n# Non-goals\n- a\n\n# Repository conventions and fixed invariants\n- b\n\n# Acceptance criteria\n- c\n\n# Validation\n- d\n');
+for (const id of ['objective', 'scope', 'constraints', 'acceptance', 'tests']) {
+  check(topLevel.has(id), 'a brief whose sections are # headings counts its ' + id + ' section');
+}
+const titled = present('# Security fix for login\n\n## Objective\n- a\n\n## Acceptance criteria\n- b\n');
+check(titled.has('objective') && titled.has('acceptance'), 'a # title followed by ## sections counts the ## sections');
+check(!titled.has('risks'), 'a lone # title is not counted as a section');
+check(present('# Objective\nDo it.\n').has('objective'), 'a brief with a single heading counts it');
+check(present('# Plan\n\n## Validate\n- run tests\n').has('tests'), 'a Validate heading counts as tests and verification');
+
 if (failures.length) {
   console.error('check-dashboard: ' + failures.length + ' failed, ' + passed + ' passed');
   for (const failure of failures) { console.error(' - ' + failure); }
