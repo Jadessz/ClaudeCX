@@ -300,6 +300,8 @@ try {
     Assert-True ((Invoke-Center -Context $context -Target '/api/center' -Token ('A' * 43)).Status -eq 401) 'a wrong token is refused'
     $page = Invoke-Center -Context $context -Target '/'
     Assert-True ($page.Status -eq 200 -and $page.Headers['Content-Security-Policy'].Contains("default-src 'none'")) 'the page is served with the strict CSP'
+    $icon = Invoke-Center -Context $context -Target '/icon.svg'
+    Assert-True ($icon.Status -eq 200 -and $icon.Headers['Content-Type'] -ceq 'image/svg+xml' -and $icon.Text.StartsWith('<svg')) 'the app icon is served as SVG'
     Assert-True ((Invoke-Center -Context $context -Method POST -Target '/app.js').Status -eq 405) 'static files are GET only'
     Assert-True ((Invoke-Center -Context $context -Target '/api/nothing' -Token $token).Status -eq 404) 'unknown routes are not found'
     Assert-True ((Invoke-Center -Context $context -Method DELETE -Target '/api/settings' -Token $token).Status -eq 405) 'settings accept only GET and POST'

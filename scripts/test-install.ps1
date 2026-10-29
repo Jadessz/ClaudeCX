@@ -174,6 +174,7 @@ try {
         $link = $shell.CreateShortcut($shortcutFile)
         Assert-True ($link.Arguments.Contains((Join-Path $destination 'scripts\start-control-center.ps1')) -and $link.Arguments.Contains('-File') -and -not $link.Arguments.Contains('-NoBrowser')) "Start menu shortcut runs the installed launcher ($($link.Arguments))"
         Assert-True ([IO.Path]::GetFileNameWithoutExtension($link.TargetPath) -eq 'pwsh') 'Start menu shortcut runs pwsh'
+        Assert-True ($link.IconLocation -eq ((Join-Path $destination 'assets\claudecx.ico') + ',0')) "Start menu shortcut uses the ClaudeCX icon ($($link.IconLocation))"
         [void][Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
     }
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $startMenu 'Startup\ClaudeCX control center.lnk'))) 'no sign-in shortcut without -StartAtLogin'

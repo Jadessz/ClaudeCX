@@ -146,7 +146,7 @@ export function ControlCenter() {
       <a className="skip-link" href="#main">Skip to content</a>
       <header className="commandbar center-bar">
         <div className="brand">
-          <span className="brand-mark" aria-hidden="true" />
+          <img className="brand-mark" src="/icon.svg" alt="" width="22" height="22" />
           <span className="brand-name">ClaudeCX</span>
           <span className="brand-sub">Control center</span>
         </div>

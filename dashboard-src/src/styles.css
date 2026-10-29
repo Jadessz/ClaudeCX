@@ -52,7 +52,7 @@ code, .mono { font-family: var(--mono); font-size: 0.92em; }
   border-bottom: 1px solid var(--line);
 }
 .brand { display: flex; align-items: center; gap: 10px; min-width: 0; margin-right: auto; }
-.brand-mark { width: 10px; height: 10px; border-radius: 2px; background: var(--cyan); }
+.brand-mark { display: block; width: 22px; height: 22px; flex: none; }
 .brand-name { font-weight: 650; letter-spacing: 0.01em; }
 .repo {
   color: var(--text-2); font-family: var(--mono); font-size: 13px;
@@ -345,7 +345,7 @@ code, .mono { font-family: var(--mono); font-size: 0.92em; }
   background: linear-gradient(90deg, transparent, rgba(92, 200, 214, 0.55) 30%, rgba(92, 200, 214, 0.55) 70%, transparent);
 }
 .center-bar .brand { margin-right: 0; }
-.brand-mark { box-shadow: 0 0 0 3px rgba(92, 200, 214, 0.18), 0 0 14px rgba(92, 200, 214, 0.45); }
+.brand-mark { filter: drop-shadow(0 0 6px rgba(92, 200, 214, 0.35)); }
 .brand-sub { color: var(--muted); font-size: 13px; padding-left: 10px; border-left: 1px solid var(--line-strong); }
 .center-nav {
   display: flex; gap: 2px; margin-right: auto; padding: 3px; overflow-x: auto;

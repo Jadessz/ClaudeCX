@@ -10,8 +10,10 @@ $script:RequiredSkillFiles = @(
     'SKILL.md',
     'agents/openai.yaml',
     'assets/bridge-settings.json',
+    'assets/claudecx.ico',
     'assets/claude-role-prompt.md',
     'assets/empty-mcp.json',
+    'assets/icon.svg',
     'assets/report-schema.json',
     'dashboard/app.js',
     'dashboard/index.html',
@@ -397,6 +399,8 @@ function New-ClaudeCXControlCenterShortcut {
         $shortcut.Arguments = $arguments
         $shortcut.WorkingDirectory = Split-Path -Parent $LauncherPath
         $shortcut.Description = 'ClaudeCX control center: live runs, history, settings, and health'
+        $iconPath = Join-Path (Split-Path -Parent (Split-Path -Parent $LauncherPath)) 'assets\claudecx.ico'
+        if ([IO.File]::Exists($iconPath)) { $shortcut.IconLocation = "$iconPath,0" }
         $shortcut.WindowStyle = 7
         $shortcut.Save()
     }

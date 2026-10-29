@@ -298,6 +298,7 @@ try {
         Assert-True ($response.Headers[$header[0]] -ceq $header[1]) "$($header[0]) is $($header[1])"
     }
     Assert-True ((Invoke-Raw -Port $port -Target '/styles.css').Headers['content-type'] -like 'text/css*') 'styles.css served as CSS'
+    Assert-True ((Invoke-Raw -Port $port -Target '/icon.svg').Headers['content-type'] -ceq 'image/svg+xml') 'icon.svg served as SVG without a token'
     Assert-True ((Invoke-Raw -Port $port -Target '/app.js').Headers['content-type'] -like 'text/javascript*') 'app.js served as JavaScript'
 
     # --- Rejections ---

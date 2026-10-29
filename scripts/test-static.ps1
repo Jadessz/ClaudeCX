@@ -49,7 +49,7 @@ $relativeFiles = @(($listing -join '') -split "`0" | Where-Object { $_ } | Sort-
     Where-Object { Test-Path -LiteralPath (Join-Path $repoRoot $_) -PathType Leaf })
 Write-Host "Checking $($relativeFiles.Count) files in $repoRoot"
 
-$textExtensions = @('.ps1', '.psm1', '.psd1', '.json', '.md', '.yaml', '.yml', '.txt', '.html', '.css', '.js')
+$textExtensions = @('.ps1', '.psm1', '.psd1', '.json', '.md', '.yaml', '.yml', '.txt', '.html', '.css', '.js', '.svg')
 $textNames = @('.gitignore', '.gitattributes')
 $textFiles = @($relativeFiles | Where-Object {
         $textExtensions -contains [IO.Path]::GetExtension($_).ToLowerInvariant() -or

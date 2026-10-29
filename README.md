@@ -641,7 +641,7 @@ doctor.ps1                        read-only setup check (-Json for agents)
 skill/claudecx/                   the Codex skill (source of truth for the bridge)
   SKILL.md                        instructions Codex follows
   agents/openai.yaml              display metadata; implicit invocation disabled
-  assets/                         bridge settings, role prompt, report schema, empty MCP config
+  assets/                         bridge settings, role prompt, report schema, empty MCP config, app icon
   scripts/invoke-claude.ps1       the bridge
   scripts/ClaudeCX.Progress.psm1  stream-json parsing, result checks, progress sanitizing
   scripts/watch-progress.ps1      read-only progress window
